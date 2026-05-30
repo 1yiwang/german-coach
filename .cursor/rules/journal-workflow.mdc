@@ -1,0 +1,112 @@
+---
+description: Daily plan/summary workflow, trigger phrases, journal location, archive cadence
+alwaysApply: true
+---
+# Daily Workflow
+
+This rule is project-agnostic. Master copy lives in `D:\Projects\cursor-daily-workflow` (`1yiwang/cursor-daily-workflow`). To update across projects, edit there and run `pwsh ./scripts/install.ps1 -Update -Target <project-path>`.
+
+## Trigger phrases
+
+EN is the primary form; ZH alternatives in italics. All triggers are case-insensitive and tolerate small variations (`EOD` ≡ `eod` ≡ `end of day`).
+
+| Phase | Primary EN trigger | EN alternates | ZH alternates |
+|---|---|---|---|
+| **Open the day with a plan** | `today's plan: <X>` | `plan: <X>`, `today I'll: <X>` | *"今天计划：…"*, *"今天我要做 …"* |
+| **Mid-day new idea / pivot** | (just say it in chat — see "Plans evolve" below) | — | — |
+| **Interim sediment** — capture a chunk into the topical doc that fits | `log this` | `record this`, `sediment this`, `note this`, `update <doc-name>` | *"记一下"*, *"沉淀一下"*, *"把这段记进 X"* |
+| **EOD summary** — write/update today's journal entry consolidating everything | `EOD` | `wrap up`, `end of day`, `summarize today`, `eod summary` | *"总结今天"*, *"今天到此"*, *"晚上最后总结"* |
+| **Confirm & push** — after reviewing the journal commit. **Re-runnable**: trigger again any time later in the day if more work happens. | `ship it` | `lgtm push`, `looks good push`, `push it`, `confirmed push`, `push` | *"推一下"*, *"确认了推"*, *"可以推了"* |
+| **Archive** past-month entries | `archive journal` | — | *"归档日志"* |
+
+> Prefer the unambiguous primary EN triggers when you want zero-ask routing. Phrases not on this list (e.g. "总结沉淀文档") are recognized but the agent may ask to disambiguate interim vs EOD.
+
+## Daily loop
+
+Expected flow for a working day:
+
+1. **Morning, in Obsidian** — read `Project-Journal-Obsidian.md` (synced from last night's EOD push). Yesterday's `Next` section is today's seed plan. Confirm or revise mentally.
+2. **Morning, in Cursor** — open this project's window, say `today's plan: …` summarizing what you'll do today.
+3. **Mid-day, in Cursor** — work. Use `log this` periodically to capture meaningful chunks into the right topical doc (`docs/working_log.md`, `docs/email_inbox_plan.md`, `PROGRESS.md`, etc.). New ideas welcome anytime — see "Plans evolve" below.
+4. **Evening, in Cursor** — say `EOD`. The agent reads today's git log + today's interim sediments + this session's edits, then writes or **updates** today's `Project-Journal-Obsidian.md` entry covering all 9 sections. Commit with `journal: <YYYY-MM-DD> …` prefix; **no push**.
+5. **Evening, in Cursor** — review the commit. If good, say `ship it`. Agent pushes. This closes the day's *main* loop, but **`ship it` is not single-use** — if more work comes up later (urgent fix, late-evening pivot, you remember a thing at midnight), do another `EOD` (which idempotently updates today's entry) and another `ship it`. Multiple `EOD → ship it` cycles per day are fine; the journal entry keeps getting updated and each push moves origin forward to the latest state.
+6. **Evening, in Obsidian** — tell the Obsidian librarian to read the updated `Project-Journal-Obsidian.md`. Concept notes / cross-project links / tags get refreshed on that side.
+
+Steps 1 and 6 happen in Obsidian; steps 2–5 happen in Cursor. The single contract between the two sides is one file per project: `Project-Journal-Obsidian.md`.
+
+### Plans evolve
+
+The morning's `today's plan: …` is the **opening** scope, not the **only** scope. New ideas, pivots, scope changes are welcome any time — just say them. The agent will:
+
+- Hold the new idea in session context.
+- If it warrants persisting now (a real new direction, not a transient thought), prompt or accept a `log this` and append to the relevant topical doc.
+- Otherwise, surface it in the EOD entry — typically in `Next` (if it's a future task) or `What I Did` (if you started it today) or `Notes for Librarian` (if it's a cross-project insight).
+
+Don't apologize for going off-plan. The plan is a starting hypothesis, not a contract.
+
+## Interim sediment vs EOD summary
+
+Same root word ("沉淀") can mean either, but the intent is different:
+
+- **Interim sediment** captures a chunk of work into the topical doc that best fits — chronological progress goes in `working_log.md`, Email feature work goes in `email_inbox_plan.md`, backlog moves go in `next_iteration_plan.md`, design decisions go in the relevant plan doc. Multiple sediments per day are fine. Each is its own commit. The journal stays untouched.
+- **EOD summary** is the **consolidating record** — one per day, in `Project-Journal-Obsidian.md`. It draws from today's git log + topical-doc sediments + this session's edits to produce the comprehensive 9-section entry.
+
+**Disambiguation rules:**
+1. **Explicit doc names override everything**: "沉淀进 working_log.md" / "记到 PROGRESS.md" / "update email_inbox_plan.md" → write there directly, no inference.
+2. **Explicit EOD framing wins**: `EOD`, `wrap up`, "总结今天", "晚上最后总结" → EOD mode.
+3. **Otherwise default to interim** and pick the topical doc by content fit. Ask if no doc obviously fits.
+
+## Journal contract
+
+- One file per project: `Project-Journal-Obsidian.md` at repo root.
+- Newest entry on top. The 9-section canonical template lives at the very top of the file (above all entries).
+- The Obsidian librarian on the user's side **reads** this file and never writes back. Single-writer (this Cursor agent only). The user surfaces Obsidian-side insights by pasting them into chat.
+
+## EOD summary procedure
+
+When the user triggers an EOD summary:
+
+1. `git log --since="6:00 today" --pretty=format:"%h %s"` — recall what got committed today.
+2. `git status --short` — uncommitted work-in-progress.
+3. Recall this session's file edits.
+4. **Read today's interim sediments** — skim `docs/working_log.md`, `docs/email_inbox_plan.md`, and any other plan docs touched today (use `git log --since=...` paths) for sections added today; consolidate them into the journal entry.
+5. **Check whether today's entry already exists** in `Project-Journal-Obsidian.md`. If yes, **update it surgically** (StrReplace on individual sections or append bullets to existing sections); never create a duplicate `## YYYY-MM-DD` heading. If no, append a new entry at the top, immediately after the canonical template block + `---` separator.
+6. Fill **all 9 sections** of the template. If a section has nothing meaningful, write `None`.
+7. The `New Concepts Discovered` table follows `.cursor/rules/knowledge-capture.mdc` rules. If today's scan found nothing, write a single row `| None | — | — | — |` so the next reader knows the scan happened.
+8. Commit message format: `journal: <YYYY-MM-DD> <one-line summary>`. If today's entry was updated rather than created, the message can read `journal: <YYYY-MM-DD> update — <what changed>`.
+9. **Do not push.** Wait for explicit "push" trigger.
+
+## Cross-project work
+
+If the day's work touched sister projects under `D:\Projects\`:
+
+- Write the entry in the project where the **primary** work happened.
+- Use the `Notes for Librarian` section to mention sisters with cross-links.
+- One Cursor window per project — no multi-write across projects.
+
+## Archiving
+
+- Default cadence: **monthly**. Run `powershell -ExecutionPolicy Bypass -File ./scripts/journal-archive.ps1` on or after the 1st of each month.
+- The script moves all entries whose `## YYYY-MM-DD` heading is **not in the current calendar month** out to `docs/journal-archive/YYYY-MM.md`.
+- The live file keeps the canonical template header + only current-month entries.
+- Weekly cadence is also fine — calling the script weekly costs nothing extra (it's a no-op when there's nothing to archive).
+
+## Installing this workflow in another project
+
+Clone the master repo somewhere, then run the install script against your target project:
+
+```powershell
+git clone https://github.com/1yiwang/cursor-daily-workflow.git D:\Projects\cursor-daily-workflow
+pwsh D:\Projects\cursor-daily-workflow\scripts\install.ps1 -Target D:\Projects\my-new-project
+```
+
+To update an existing installation when this template repo changes:
+
+```powershell
+git -C D:\Projects\cursor-daily-workflow pull
+pwsh D:\Projects\cursor-daily-workflow\scripts\install.ps1 -Update -Target D:\Projects\my-new-project
+```
+
+The journal file (`Project-Journal-Obsidian.md`) is project-specific and is **never overwritten** on update — only created on first install.
+
+Then write the project's first dated entry by triggering an EOD summary on a real day's work. Don't seed fake history.
