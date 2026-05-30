@@ -49,7 +49,7 @@ e.g. MVP build, UI polish, architecture refactor, bug fix, productization
 active
 
 ### Current Phase
-v0.2 LLM + Convex wiring complete (DeepSeek live behind 4 API routes, all Convex backend + client code committed and build-validated) — pending only the one-shot interactive `npx convex dev` login + `DEEPSEEK_API_KEY` from the user. Late-evening: hardened the workflow with `.cursor/rules/secrets.mdc` after the agent leaked a real `DEEPSEEK_API_KEY` into conversation context by Read-ing `.env.local` during a config-verification step.
+v0.2 LLM + Convex wiring complete (DeepSeek live behind 4 API routes, all Convex backend + client code committed and build-validated) — pending local Convex bootstrap + DeepSeek key rotation before first real smoke test. Late-evening: hardened the workflow with `.cursor/rules/secrets.mdc` after the agent leaked a real `DEEPSEEK_API_KEY` into conversation context by Read-ing `.env.local` during a config-verification step. User deleted the duplicate/stale Convex `german-coach` project and will likely pause until the monthly Convex Free quota resets.
 
 ### What I Did
 - **Bootstrap (morning).** Created the empty `D:\Projects\german-coach` workspace, installed the `cursor-daily-workflow` scaffold via `install.ps1 -Target D:\Projects\german-coach`, fixed a UTF-8/CP936 mojibake bug in the generated `Project-Journal-Obsidian.md` (em-dashes turned into `鈥?` during `{{PROJECT_NAME}}` substitution on a Windows-default-codepage host) by re-downloading the clean upstream template, then `git init` + first commit + `gh repo create 1yiwang/german-coach --public --source=. --push`.
@@ -100,13 +100,12 @@ v0.2 LLM + Convex wiring complete (DeepSeek live behind 4 API routes, all Convex
 - **`.gitignore` is necessary but not sufficient for secrets.** `.gitignore` protects only the git-push surface; it does nothing about the agent-context surface (Read tool → conversation context → `agent-transcripts/*.jsonl` + model-provider logs). The fix is a project-rule (`.cursor/rules/secrets.mdc`), not a `.gitignore` tweak. This is a generally-applicable insight for any project using an AI coding assistant — should probably land in the upstream `cursor-daily-workflow` template too.
 
 ### Blockers
-- **Two user-action items required to actually run the app:**
-  1. `npx convex dev` (interactive — browser login + creates the dev deployment + writes `CONVEX_DEPLOYMENT` and `NEXT_PUBLIC_CONVEX_URL` into `.env.local`; codegen overwrites `convex/_generated/`).
-  2. Add `DEEPSEEK_API_KEY=sk-…` to `.env.local` (`.env.local.example` documents the variables; key from https://platform.deepseek.com/api_keys).
-- **After both:** `npx convex run seed:run` populates 1 document + 9 sentences + 4 demo SRS words; `npm run dev`; `/review` will show a real card and grading writes back to Convex.
+- **Convex Free quota risk.** User saw Convex limit warnings after heavy use this month and deleted the older duplicate `german-coach` project from the Convex dashboard. Plan is to avoid more Convex churn until the next monthly quota reset unless absolutely needed.
+- **Secrets hygiene before continuing.** Do not read `.env.local`. The user should rotate `DEEPSEEK_API_KEY` in the DeepSeek dashboard, paste the new value locally, and only confirm whether required variable names exist.
+- **App is code-complete for v0.2 but not yet fully smoke-tested against live services.** Still needs one local Convex bootstrap, seed run, and DeepSeek-backed UI smoke test.
 
 ### Next
-- **First-thing tomorrow (~5 min, human-driven):** run `npx convex dev` (interactive login), set `DEEPSEEK_API_KEY` in `.env.local`, run `npx convex run seed:run`, smoke test `/learn` 🔍 and `/review`.
+- **Next-session resume checklist (human-driven, no secrets in chat):** wait until Convex quota is comfortable again (likely after the monthly reset), then run `npx convex dev` from the repo root and keep that watcher open; confirm `.env.local` contains `CONVEX_DEPLOYMENT`, `NEXT_PUBLIC_CONVEX_URL`, and a rotated `DEEPSEEK_API_KEY`; run `npx convex run seed:run`; start `npm run dev`; smoke test `/`, `/learn` 🔍/✏️/double-click lookup, `/chat` streaming, and `/review` grading. If `npx convex dev` overwrites `convex/_generated/`, review those generated diffs separately and commit them only after the smoke test passes.
 - **v0.2 polish (1–2 hours).** Wire the "+ 加入复习队列" button in `<DictionaryPopover>` to `api.words.add` so newly-looked-up words actually flow into the SRS queue. Add a small toast (`shadcn-ui sonner`) on success. Wire the home "今日目标" card to read real counts from Convex (`words.recordedToday` query + a `dailyStats` upsert hook).
 - **v0.3 — PDF upload (~2 days).** New `/upload` route + `pdf-parse` server action + an LLM call that splits raw text into sentences with grammar tags + Convex `documents.create` mutation. `/learn/[id]` becomes the per-document reader; the hard-coded `lib/sample-article.ts` can then be deleted (one of its 9 sentences stays as a seed in `convex/seed.ts`).
 - **v0.4 — onboard the chat side of SRS.** Wire the chat-coach to detect new vocabulary in user replies and call `api.words.add` so the SRS queue grows from both reading and chat.
