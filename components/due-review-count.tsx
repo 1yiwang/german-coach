@@ -1,53 +1,37 @@
-"use client";
-
-import { useEffect, useState } from "react";
-import { useQuery } from "convex/react";
-import { api } from "@/convex/_generated/api";
+import { dueCount } from "@/lib/db/words";
 
 /**
- * Live count of words whose `nextReview` is at or before now. Falls back
- * gracefully if Convex isn't configured yet.
- *
- * Mount-guarded so `next build` prerender (which has no ConvexProvider in
- * the tree because NEXT_PUBLIC_CONVEX_URL isn't set at build time) doesn't
- * trip useQuery's "must be under ConvexProvider" assertion.
+ * Server-component due-review count. Reads Supabase directly via `lib/db/words`
+ * and falls back to "—" if Supabase isn't configured yet (first clone, no
+ * .env.local). The parent page (`app/page.tsx`) is marked `force-dynamic`
+ * so this fetch happens per-request, not at build time.
  */
-export function DueReviewCount() {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-  if (!mounted) {
-    return (
-      <>
-        <div className="text-3xl font-semibold font-mono">…</div>
-        <p className="text-xs text-muted-foreground">加载中。</p>
-      </>
-    );
+export async function DueReviewCount() {
+  let count: number | null = null;
+  let configured = true;
+  try {
+    count = await dueCount();
+  } catch {
+    configured = false;
   }
-  return <Inner />;
-}
 
-function Inner() {
-  const convexConfigured = Boolean(process.env.NEXT_PUBLIC_CONVEX_URL);
-  const count = useQuery(api.words.dueCount, {}) as number | undefined;
-
-  if (!convexConfigured) {
+  if (!configured || count === null) {
     return (
       <>
         <div className="text-3xl font-semibold font-mono text-muted-foreground">
           —
         </div>
         <p className="text-xs text-muted-foreground">
-          Convex 还没部署。先跑 <code>npx convex dev</code>。
+          Supabase 还没配。先填{" "}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">
+            .env.local
+          </code>
+          ，再跑迁移和{" "}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">
+            npm run seed
+          </code>
+          。
         </p>
-      </>
-    );
-  }
-
-  if (count === undefined) {
-    return (
-      <>
-        <div className="text-3xl font-semibold font-mono">…</div>
-        <p className="text-xs text-muted-foreground">从 Convex 拉数据中。</p>
       </>
     );
   }

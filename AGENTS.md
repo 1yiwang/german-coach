@@ -4,16 +4,13 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
-<!-- convex-ai-start -->
+<!-- supabase-start -->
 
-This project uses [Convex](https://convex.dev) as its backend.
+This project uses [Supabase](https://supabase.com) (Postgres) as its backend.
 
-When working on Convex code, **always read
-`convex/_generated/ai/guidelines.md` first** for important guidelines on
-how to correctly use Convex APIs and patterns. The file contains rules that
-override what you may have learned about Convex from training data.
+- Schema lives in `supabase/migrations/*.sql` — the source of truth. Run migrations through the Supabase Dashboard SQL Editor, or via `supabase db push` if the CLI is installed.
+- All DB access from app code MUST go through `lib/db/*` (server-only), never `@supabase/supabase-js` directly from a component. The `service_role` key is imported only in `lib/supabase/server.ts` (`import "server-only"`) — adding a fresh import anywhere else risks shipping it to the browser.
+- Browser code calls Next.js API routes under `app/api/words/*` (and friends), which then call `lib/db/*`.
+- SRS state changes go through `recordReview` in `lib/db/words.ts`, which computes the next SM-2 state server-side via `lib/srs.ts` — never trust a client-supplied `ease` / `interval` / `nextReview`.
 
-Convex agent skills for common tasks can be installed by running
-`npx convex ai-files install`.
-
-<!-- convex-ai-end -->
+<!-- supabase-end -->

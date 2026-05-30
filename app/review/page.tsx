@@ -1,9 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
-import { api } from "@/convex/_generated/api";
-import type { Id } from "@/convex/_generated/dataModel";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Card,
   CardContent,
@@ -22,8 +19,8 @@ import {
   type SrsState,
 } from "@/lib/srs";
 
-interface ConvexWord {
-  _id: Id<"words">;
+interface ReviewWord {
+  id: string;
   word: string;
   definition: string;
   exampleSentence?: string;
@@ -53,32 +50,38 @@ function statusFromReps(reps: number, lastRating?: ReviewRating): WordStatus {
 }
 
 export default function ReviewPage() {
-  // Defer Convex hooks until client mount so SSR/prerender doesn't crash on
-  // the missing ConvexProvider during `next build`.
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-  if (!mounted) return null;
-  return <ReviewPageClient />;
-}
-
-function ReviewPageClient() {
-  const convexConfigured = Boolean(process.env.NEXT_PUBLIC_CONVEX_URL);
-  const words = useQuery(api.words.dueForReview, {}) as
-    | ConvexWord[]
-    | undefined;
-  const recordReview = useMutation(api.words.recordReview);
-
+  const [words, setWords] = useState<ReviewWord[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [reviewedIds, setReviewedIds] = useState<Set<string>>(new Set());
   const [showAnswer, setShowAnswer] = useState(false);
 
-  // Pending = words returned by Convex that haven't been graded this session yet.
+  const loadDue = useCallback(async () => {
+    try {
+      const res = await fetch("/api/words/due", { cache: "no-store" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const { words: payload } = (await res.json()) as { words: ReviewWord[] };
+      setWords(payload);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : "Unknown error");
+      setWords([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDue();
+  }, [loadDue]);
+
   const pending = useMemo(
-    () => (words ?? []).filter((w) => !reviewedIds.has(w._id)),
+    () => (words ?? []).filter((w) => !reviewedIds.has(w.id)),
     [words, reviewedIds],
   );
   const current = pending[0];
 
-  const srsState = (w: ConvexWord): SrsState => ({
+  const srsState = (w: ReviewWord): SrsState => ({
     ease: w.ease,
     interval: w.interval,
     repetitions: w.repetitions,
@@ -96,40 +99,35 @@ function ReviewPageClient() {
 
   const handleRating = async (rating: ReviewRating) => {
     if (!current) return;
-    const next = calculateNextReview(srsState(current), rating);
-    const quality = rating === "again" ? 1 : rating === "hard" ? 3 : rating === "good" ? 4 : 5;
-
-    setReviewedIds((prev) => new Set(prev).add(current._id));
+    setReviewedIds((prev) => new Set(prev).add(current.id));
     setShowAnswer(false);
-
     try {
-      await recordReview({
-        wordId: current._id,
-        quality,
-        ease: next.ease,
-        interval: next.interval,
-        repetitions: next.repetitions,
-        nextReview: next.nextReview,
+      const res = await fetch("/api/words/review", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ wordId: current.id, rating }),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
     } catch (err) {
       console.error("recordReview failed", err);
     }
   };
 
-  if (!convexConfigured) {
-    return <NotConfiguredState />;
+  if (loadError && (words?.length ?? 0) === 0) {
+    return <NotConfiguredState error={loadError} />;
   }
 
-  if (words === undefined) {
+  if (words === null) {
     return (
       <div className="flex flex-col gap-6">
         <header className="space-y-1">
           <h1 className="font-heading text-2xl font-semibold tracking-tight">
             复习
           </h1>
-          <p className="text-sm text-muted-foreground">
-            从 Convex 加载词条中……
-          </p>
+          <p className="text-sm text-muted-foreground">从 Supabase 加载词条中……</p>
         </header>
       </div>
     );
@@ -144,7 +142,7 @@ function ReviewPageClient() {
           </h1>
           <p className="text-sm text-muted-foreground">
             {words.length === 0
-              ? "数据库里还没有词条。运行 `npx convex run seed:run` 写入 4 个 demo 词，或在精读页面把新词加进队列。"
+              ? "数据库里还没有词条。运行 `npm run seed` 写入 4 个 demo 词，或在精读页面把新词加进队列。"
               : "今天全部复习完了。"}
           </p>
         </header>
@@ -160,7 +158,9 @@ function ReviewPageClient() {
     );
   }
 
+  const previewSrs = calculateNextReview(srsState(current), "good");
   const status = statusFromReps(current.repetitions);
+  void previewSrs;
 
   return (
     <div className="flex flex-col gap-6">
@@ -170,7 +170,7 @@ function ReviewPageClient() {
             复习
           </h1>
           <p className="text-sm text-muted-foreground">
-            剩余 {pending.length} 张 · 算法 SM-2 · 数据源 Convex
+            剩余 {pending.length} 张 · 算法 SM-2 · 数据源 Supabase
           </p>
         </div>
         <Badge variant="outline">{statusLabel(status)}</Badge>
@@ -224,44 +224,59 @@ function ReviewPageClient() {
       </Card>
 
       <p className="text-xs text-muted-foreground border-l-2 border-border pl-3 italic">
-        v0.2：词条从 Convex `words` 表读，评分通过 `words.recordReview` 写回，下次复习时间由 SM-2 算法计算。
+        v0.2.5：词条从 Supabase `words` 表读，评分通过 POST `/api/words/review`
+        写回（service_role 只在 server-only 路径出现），下次复习时间由 SM-2 算法在服务端计算。
       </p>
     </div>
   );
 }
 
-function NotConfiguredState() {
+function NotConfiguredState({ error }: { error: string }) {
   return (
     <div className="flex flex-col gap-6">
       <header className="space-y-1">
         <h1 className="font-heading text-2xl font-semibold tracking-tight">
           复习
         </h1>
-        <p className="text-sm text-muted-foreground">Convex 还没部署</p>
+        <p className="text-sm text-muted-foreground">Supabase 还没配好</p>
       </header>
       <Card>
         <CardHeader>
-          <CardTitle>等待 Convex 上线</CardTitle>
+          <CardTitle>初始化 Supabase</CardTitle>
           <CardDescription>
-            这个页面从 Convex `words` 表读数据。需要在终端跑一次设置。
+            这个页面从 Supabase `words` 表读。需要在终端跑一次初始化。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <ol className="list-decimal pl-5 space-y-1.5">
             <li>
+              在 Supabase Dashboard → SQL Editor 跑{" "}
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                npx convex dev
+                supabase/migrations/0001_init.sql
+              </code>
+            </li>
+            <li>
+              把{" "}
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                NEXT_PUBLIC_SUPABASE_URL
+              </code>
+              、
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                NEXT_PUBLIC_SUPABASE_ANON_KEY
+              </code>
+              、
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                SUPABASE_SERVICE_ROLE_KEY
               </code>{" "}
-              （浏览器登录 + 创建 dev deployment，会写入{" "}
+              填进{" "}
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                 .env.local
               </code>
-              ）
             </li>
             <li>
-              另起终端：
+              终端：
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                npx convex run seed:run
+                npm run seed
               </code>
             </li>
             <li>
@@ -272,6 +287,9 @@ function NotConfiguredState() {
               ，刷新本页
             </li>
           </ol>
+          <p className="text-xs text-muted-foreground border-l-2 border-border pl-3 italic">
+            报错详情：{error}
+          </p>
         </CardContent>
       </Card>
     </div>

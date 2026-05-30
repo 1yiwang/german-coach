@@ -1,7 +1,7 @@
 import Link from "next/link";
 
-// Home reads `due review count` from Convex on the client; skip prerender so
-// the missing ConvexProvider at build time doesn't blow up the export.
+// `<DueReviewCount>` reads Supabase on the server per request; skip prerender
+// so the build doesn't try to hit the DB without env vars.
 export const dynamic = "force-dynamic";
 
 import {
@@ -91,33 +91,38 @@ export default function HomePage() {
       <section>
         <Card>
           <CardHeader>
-            <CardTitle>v0.2 进度</CardTitle>
+            <CardTitle>v0.2.5 进度</CardTitle>
             <CardDescription>
-              DeepSeek API 已接 + Convex schema 待 `npx convex dev` 一次性部署
+              数据后端从 Convex 迁移到 Supabase Postgres；DeepSeek 不动
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             <p>
-              🔍 / ✏️ / 双击查词 / 对话教练全部调用 DeepSeek（OpenAI 兼容协议）。需要在
+              🔍 / ✏️ / 双击查词 / 对话教练 全部调用 DeepSeek（OpenAI 兼容协议）。需要在
               <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
                 .env.local
               </code>
-              里填入
+              里填{" "}
               <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
                 DEEPSEEK_API_KEY
               </code>
               。
             </p>
             <p>
-              /review 从 Convex `words` 表读。如果首次跑，先
+              /review 从 Supabase{" "}
               <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
-                npx convex dev
-              </code>
-              建 deployment，再
+                words
+              </code>{" "}
+              表读，所有写操作走 server-only API routes（service_role 不进浏览器）。首次部署先在
+              Supabase SQL Editor 跑{" "}
               <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
-                npx convex run seed:run
+                supabase/migrations/0001_init.sql
               </code>
-              写入 demo 数据。
+              ，再{" "}
+              <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                npm run seed
+              </code>
+              。
             </p>
           </CardContent>
         </Card>
