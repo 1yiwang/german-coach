@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -47,6 +48,9 @@ export default function LearnPage() {
   >({});
   const [popover, setPopover] = useState<WordPopover | null>(null);
   const [lookup, setLookup] = useState<LookupState | null>(null);
+  // Track words added to the SRS queue this session so the popover button
+  // can flip to "已加入 ✓" without re-fetching from Supabase on every click.
+  const [addedWords, setAddedWords] = useState<Set<string>>(new Set());
 
   const togglePanel = async (
     sentence: SampleSentence,
@@ -180,6 +184,10 @@ export default function LearnPage() {
         <DictionaryPopover
           popover={popover}
           lookup={lookup}
+          alreadyAdded={addedWords.has(popover.word.toLowerCase())}
+          onAdded={(word) =>
+            setAddedWords((prev) => new Set(prev).add(word.toLowerCase()))
+          }
           onClose={() => setPopover(null)}
         />
       )}
@@ -369,15 +377,20 @@ function PracticePanel({ sentence }: { sentence: SampleSentence }) {
 function DictionaryPopover({
   popover,
   lookup,
+  alreadyAdded,
+  onAdded,
   onClose,
 }: {
   popover: WordPopover;
   lookup: LookupState;
+  alreadyAdded: boolean;
+  onAdded: (word: string) => void;
   onClose: () => void;
 }) {
   // Clamp popover to viewport so it never falls off the right edge.
   const ref = useRef<HTMLDivElement>(null);
   const [adjusted, setAdjusted] = useState({ x: popover.x, y: popover.y });
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -388,6 +401,38 @@ function DictionaryPopover({
       y: popover.y,
     });
   }, [popover.x, popover.y]);
+
+  const handleAdd = async () => {
+    if (lookup.status !== "ready" || !lookup.data) return;
+    const word = lookup.data.word || popover.word;
+    setAdding(true);
+    try {
+      const res = await fetch("/api/words/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          word,
+          definition: lookup.data.meaningZh,
+          exampleSentence: popover.sentence,
+          source: "reading",
+          sourceRef: sampleArticle.title,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) {
+        throw new Error(json.error ?? `HTTP ${res.status}`);
+      }
+      onAdded(word);
+      toast.success(`已加入复习队列：${word}`, {
+        description: "明天 /review 会出现这张卡。",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      toast.error("加入失败", { description: message });
+    } finally {
+      setAdding(false);
+    }
+  };
 
   return (
     <div
@@ -461,8 +506,20 @@ function DictionaryPopover({
         </div>
       )}
 
-      <Button size="sm" variant="outline" className="w-full" disabled>
-        + 加入复习队列（待 Convex 接上）
+      <Button
+        size="sm"
+        variant={alreadyAdded ? "secondary" : "outline"}
+        className="w-full"
+        disabled={
+          lookup.status !== "ready" || !lookup.data || adding || alreadyAdded
+        }
+        onClick={handleAdd}
+      >
+        {alreadyAdded
+          ? "✓ 已加入复习队列"
+          : adding
+            ? "加入中…"
+            : "+ 加入复习队列"}
       </Button>
     </div>
   );

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
+import { Toaster } from "sonner";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -67,6 +68,7 @@ export default function RootLayout({
             <span className="font-mono">v0.2.5 · DeepSeek + Supabase</span>
           </div>
         </footer>
+        <Toaster position="bottom-right" richColors closeButton />
       </body>
     </html>
   );
