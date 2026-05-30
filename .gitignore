@@ -34,6 +34,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.local.example
+!.env.example
 
 # vercel
 .vercel
@@ -51,8 +53,10 @@ next-env.d.ts
 *.canvas.status.json
 *.canvas.data.json
 
-# Convex generated files (keep schema, ignore local artifacts)
-convex/_generated/
+# Convex generated files: we DO commit `convex/_generated/` so that
+# `next build` works before the first `npx convex dev` run (the committed
+# files are hand-written stubs; they get overwritten by Convex codegen on
+# first dev run, after which the diff is committed once and forgotten).
 
 # PowerShell test artifacts
 *.bak

@@ -1,6 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import {
   Card,
   CardContent,
@@ -12,96 +15,125 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   calculateNextReview,
-  initialSrsState,
   intervalLabel,
   statusLabel,
+  WordStatus,
   type ReviewRating,
   type SrsState,
-  WordStatus,
 } from "@/lib/srs";
 
-interface ReviewCard {
-  id: string;
+interface ConvexWord {
+  _id: Id<"words">;
   word: string;
   definition: string;
-  example: string;
-  srs: SrsState;
-  status: WordStatus;
+  exampleSentence?: string;
+  ease: number;
+  interval: number;
+  repetitions: number;
+  nextReview: number;
+  lastReview?: number;
 }
 
-const seedCards: ReviewCard[] = [
-  {
-    id: "1",
-    word: "besuchen",
-    definition: "v. 拜访 / 参加（课程、活动）",
-    example: "Anna hat gestern einen neuen Deutschkurs besucht.",
-    srs: initialSrsState(),
-    status: WordStatus.New,
-  },
-  {
-    id: "2",
-    word: "nervös",
-    definition: "adj. 紧张的、神经质的",
-    example: "Sie war ein bisschen nervös.",
-    srs: initialSrsState(),
-    status: WordStatus.New,
-  },
-  {
-    id: "3",
-    word: "vorstellen",
-    definition: "v. sich vorstellen 自我介绍 / vorstellen 介绍、设想",
-    example: "Die Lehrerin hat sich vorgestellt.",
-    srs: initialSrsState(),
-    status: WordStatus.New,
-  },
-  {
-    id: "4",
-    word: "austauschen",
-    definition: "v. trennbar 交换",
-    example: "Sie haben ihre Telefonnummern ausgetauscht.",
-    srs: initialSrsState(),
-    status: WordStatus.New,
-  },
-];
-
-const ratingButtons: { rating: ReviewRating; label: string; variant: "destructive" | "outline" | "secondary" | "default" }[] = [
+const ratingButtons: {
+  rating: ReviewRating;
+  label: string;
+  variant: "destructive" | "outline" | "secondary" | "default";
+}[] = [
   { rating: "again", label: "又错了", variant: "destructive" },
   { rating: "hard", label: "有点难", variant: "outline" },
   { rating: "good", label: "记得", variant: "secondary" },
   { rating: "easy", label: "很简单", variant: "default" },
 ];
 
+function statusFromReps(reps: number, lastRating?: ReviewRating): WordStatus {
+  if (lastRating === "again") return WordStatus.Learning1;
+  if (reps >= 4) return WordStatus.WellKnown;
+  if (reps === 0) return WordStatus.New;
+  return Math.min(WordStatus.Learning4, reps + 1) as WordStatus;
+}
+
 export default function ReviewPage() {
-  const [cards, setCards] = useState(seedCards);
+  // Defer Convex hooks until client mount so SSR/prerender doesn't crash on
+  // the missing ConvexProvider during `next build`.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+  return <ReviewPageClient />;
+}
+
+function ReviewPageClient() {
+  const convexConfigured = Boolean(process.env.NEXT_PUBLIC_CONVEX_URL);
+  const words = useQuery(api.words.dueForReview, {}) as
+    | ConvexWord[]
+    | undefined;
+  const recordReview = useMutation(api.words.recordReview);
+
+  const [reviewedIds, setReviewedIds] = useState<Set<string>>(new Set());
   const [showAnswer, setShowAnswer] = useState(false);
 
-  const remaining = cards.length;
-  const current = cards[0];
+  // Pending = words returned by Convex that haven't been graded this session yet.
+  const pending = useMemo(
+    () => (words ?? []).filter((w) => !reviewedIds.has(w._id)),
+    [words, reviewedIds],
+  );
+  const current = pending[0];
+
+  const srsState = (w: ConvexWord): SrsState => ({
+    ease: w.ease,
+    interval: w.interval,
+    repetitions: w.repetitions,
+    lastReview: w.lastReview,
+    nextReview: w.nextReview,
+  });
 
   const previewIntervals = useMemo(() => {
     if (!current) return null;
     return ratingButtons.map((b) => ({
       ...b,
-      preview: intervalLabel(current.srs, b.rating),
+      preview: intervalLabel(srsState(current), b.rating),
     }));
   }, [current]);
 
-  const handleRating = (rating: ReviewRating) => {
+  const handleRating = async (rating: ReviewRating) => {
     if (!current) return;
-    const next = calculateNextReview(current.srs, rating);
+    const next = calculateNextReview(srsState(current), rating);
+    const quality = rating === "again" ? 1 : rating === "hard" ? 3 : rating === "good" ? 4 : 5;
 
-    setCards((prev) => {
-      const [, ...rest] = prev;
-      if (rating === "again") {
-        return [
-          ...rest,
-          { ...current, srs: next, status: next.status },
-        ];
-      }
-      return rest;
-    });
+    setReviewedIds((prev) => new Set(prev).add(current._id));
     setShowAnswer(false);
+
+    try {
+      await recordReview({
+        wordId: current._id,
+        quality,
+        ease: next.ease,
+        interval: next.interval,
+        repetitions: next.repetitions,
+        nextReview: next.nextReview,
+      });
+    } catch (err) {
+      console.error("recordReview failed", err);
+    }
   };
+
+  if (!convexConfigured) {
+    return <NotConfiguredState />;
+  }
+
+  if (words === undefined) {
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="space-y-1">
+          <h1 className="font-heading text-2xl font-semibold tracking-tight">
+            复习
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            从 Convex 加载词条中……
+          </p>
+        </header>
+      </div>
+    );
+  }
 
   if (!current) {
     return (
@@ -111,7 +143,9 @@ export default function ReviewPage() {
             复习
           </h1>
           <p className="text-sm text-muted-foreground">
-            今天全部复习完了。
+            {words.length === 0
+              ? "数据库里还没有词条。运行 `npx convex run seed:run` 写入 4 个 demo 词，或在精读页面把新词加进队列。"
+              : "今天全部复习完了。"}
           </p>
         </header>
         <Card>
@@ -126,6 +160,8 @@ export default function ReviewPage() {
     );
   }
 
+  const status = statusFromReps(current.repetitions);
+
   return (
     <div className="flex flex-col gap-6">
       <header className="flex items-end justify-between">
@@ -134,10 +170,10 @@ export default function ReviewPage() {
             复习
           </h1>
           <p className="text-sm text-muted-foreground">
-            剩余 {remaining} 张 · 算法 SM-2（移植自 Lumina）
+            剩余 {pending.length} 张 · 算法 SM-2 · 数据源 Convex
           </p>
         </div>
-        <Badge variant="outline">{statusLabel(current.status)}</Badge>
+        <Badge variant="outline">{statusLabel(status)}</Badge>
       </header>
 
       <Card>
@@ -151,9 +187,11 @@ export default function ReviewPage() {
           {showAnswer ? (
             <div className="space-y-2 text-sm">
               <p className="font-medium">{current.definition}</p>
-              <p className="text-muted-foreground italic">
-                例：{current.example}
-              </p>
+              {current.exampleSentence && (
+                <p className="text-muted-foreground italic">
+                  例：{current.exampleSentence}
+                </p>
+              )}
             </div>
           ) : (
             <div className="text-sm text-muted-foreground italic">
@@ -186,8 +224,56 @@ export default function ReviewPage() {
       </Card>
 
       <p className="text-xs text-muted-foreground border-l-2 border-border pl-3 italic">
-        v0.1：词条来自硬编码的 4 个 demo 词。v0.3 接 Convex 后，精读页面「加入复习」+ 对话中的生词会真正流入这里。
+        v0.2：词条从 Convex `words` 表读，评分通过 `words.recordReview` 写回，下次复习时间由 SM-2 算法计算。
       </p>
+    </div>
+  );
+}
+
+function NotConfiguredState() {
+  return (
+    <div className="flex flex-col gap-6">
+      <header className="space-y-1">
+        <h1 className="font-heading text-2xl font-semibold tracking-tight">
+          复习
+        </h1>
+        <p className="text-sm text-muted-foreground">Convex 还没部署</p>
+      </header>
+      <Card>
+        <CardHeader>
+          <CardTitle>等待 Convex 上线</CardTitle>
+          <CardDescription>
+            这个页面从 Convex `words` 表读数据。需要在终端跑一次设置。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <ol className="list-decimal pl-5 space-y-1.5">
+            <li>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                npx convex dev
+              </code>{" "}
+              （浏览器登录 + 创建 dev deployment，会写入{" "}
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                .env.local
+              </code>
+              ）
+            </li>
+            <li>
+              另起终端：
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                npx convex run seed:run
+              </code>
+            </li>
+            <li>
+              重启{" "}
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                npm run dev
+              </code>
+              ，刷新本页
+            </li>
+          </ol>
+        </CardContent>
+      </Card>
     </div>
   );
 }

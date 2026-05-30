@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,18 +12,47 @@ interface SentenceState {
   mode: PanelMode;
 }
 
+interface AnalyzeCache {
+  status: "idle" | "loading" | "ready" | "error";
+  content?: string;
+  error?: string;
+}
+
 interface WordPopover {
   sentenceIndex: number;
   word: string;
+  sentence: string;
   x: number;
   y: number;
 }
 
+interface LookupState {
+  status: "loading" | "ready" | "error";
+  data?: {
+    word: string;
+    pos: string;
+    meaningZh: string;
+    meaningEn: string;
+    collocations: string[];
+    examples: string[];
+    inflection: string;
+  };
+  error?: string;
+}
+
 export default function LearnPage() {
   const [states, setStates] = useState<Record<number, SentenceState>>({});
+  const [analyzeCache, setAnalyzeCache] = useState<
+    Record<number, AnalyzeCache>
+  >({});
   const [popover, setPopover] = useState<WordPopover | null>(null);
+  const [lookup, setLookup] = useState<LookupState | null>(null);
 
-  const togglePanel = (index: number, mode: PanelMode) => {
+  const togglePanel = async (
+    sentence: SampleSentence,
+    mode: PanelMode,
+  ) => {
+    const index = sentence.index;
     setStates((prev) => {
       const current = prev[index]?.mode;
       return {
@@ -31,6 +60,40 @@ export default function LearnPage() {
         [index]: { mode: current === mode ? null : mode },
       };
     });
+
+    if (mode === "analyze" && !analyzeCache[index]) {
+      setAnalyzeCache((prev) => ({
+        ...prev,
+        [index]: { status: "loading" },
+      }));
+      try {
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sentence: sentence.original }),
+        });
+        const json = (await res.json()) as { content?: string; error?: string };
+        if (!res.ok || json.error) {
+          setAnalyzeCache((prev) => ({
+            ...prev,
+            [index]: {
+              status: "error",
+              error: json.error ?? `HTTP ${res.status}`,
+            },
+          }));
+        } else {
+          setAnalyzeCache((prev) => ({
+            ...prev,
+            [index]: { status: "ready", content: json.content },
+          }));
+        }
+      } catch (err) {
+        setAnalyzeCache((prev) => ({
+          ...prev,
+          [index]: { status: "error", error: (err as Error).message },
+        }));
+      }
+    }
   };
 
   const speak = (text: string) => {
@@ -46,9 +109,9 @@ export default function LearnPage() {
     window.speechSynthesis.speak(utter);
   };
 
-  const handleWordDoubleClick = (
+  const handleWordDoubleClick = async (
     e: React.MouseEvent<HTMLSpanElement>,
-    sentenceIndex: number,
+    sentence: SampleSentence,
     word: string,
   ) => {
     e.stopPropagation();
@@ -56,11 +119,29 @@ export default function LearnPage() {
     if (!cleaned) return;
     const rect = (e.target as HTMLElement).getBoundingClientRect();
     setPopover({
-      sentenceIndex,
+      sentenceIndex: sentence.index,
       word: cleaned,
+      sentence: sentence.original,
       x: rect.left + window.scrollX,
       y: rect.bottom + window.scrollY + 6,
     });
+    setLookup({ status: "loading" });
+
+    try {
+      const res = await fetch("/api/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word: cleaned, sentence: sentence.original }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) {
+        setLookup({ status: "error", error: json.error ?? `HTTP ${res.status}` });
+      } else {
+        setLookup({ status: "ready", data: json });
+      }
+    } catch (err) {
+      setLookup({ status: "error", error: (err as Error).message });
+    }
   };
 
   return (
@@ -78,7 +159,7 @@ export default function LearnPage() {
       </header>
 
       <p className="text-xs text-muted-foreground border-l-2 border-border pl-3 italic">
-        提示：单击 🔍 看语法解析（v0.1 是 placeholder），单击 ✏️ 进入练习，单击 🔊 由浏览器 TTS 朗读，双击任意单词弹出释义浮窗。
+        提示：单击 🔍 让 DeepSeek 解析这句的语法/词汇，单击 ✏️ 提交练习，单击 🔊 用浏览器 TTS 朗读，双击任意单词查词。
       </p>
 
       <div className="space-y-3">
@@ -87,6 +168,7 @@ export default function LearnPage() {
             key={sentence.index}
             sentence={sentence}
             state={states[sentence.index] ?? { mode: null }}
+            analyze={analyzeCache[sentence.index]}
             onToggle={togglePanel}
             onSpeak={speak}
             onWordDoubleClick={handleWordDoubleClick}
@@ -94,9 +176,10 @@ export default function LearnPage() {
         ))}
       </div>
 
-      {popover && (
+      {popover && lookup && (
         <DictionaryPopover
           popover={popover}
+          lookup={lookup}
           onClose={() => setPopover(null)}
         />
       )}
@@ -107,11 +190,12 @@ export default function LearnPage() {
 interface SentenceBlockProps {
   sentence: SampleSentence;
   state: SentenceState;
-  onToggle: (index: number, mode: PanelMode) => void;
+  analyze?: AnalyzeCache;
+  onToggle: (sentence: SampleSentence, mode: PanelMode) => void;
   onSpeak: (text: string) => void;
   onWordDoubleClick: (
     e: React.MouseEvent<HTMLSpanElement>,
-    sentenceIndex: number,
+    sentence: SampleSentence,
     word: string,
   ) => void;
 }
@@ -119,6 +203,7 @@ interface SentenceBlockProps {
 function SentenceBlock({
   sentence,
   state,
+  analyze,
   onToggle,
   onSpeak,
   onWordDoubleClick,
@@ -135,9 +220,7 @@ function SentenceBlock({
               ) : (
                 <span
                   key={i}
-                  onDoubleClick={(e) =>
-                    onWordDoubleClick(e, sentence.index, w)
-                  }
+                  onDoubleClick={(e) => onWordDoubleClick(e, sentence, w)}
                   className="cursor-text hover:bg-accent/60 rounded px-0.5 -mx-0.5 transition-colors"
                 >
                   {w}
@@ -149,7 +232,7 @@ function SentenceBlock({
             <Button
               size="sm"
               variant={state.mode === "analyze" ? "default" : "outline"}
-              onClick={() => onToggle(sentence.index, "analyze")}
+              onClick={() => onToggle(sentence, "analyze")}
               aria-label="解析"
               title="解析"
             >
@@ -167,7 +250,7 @@ function SentenceBlock({
             <Button
               size="sm"
               variant={state.mode === "practice" ? "default" : "outline"}
-              onClick={() => onToggle(sentence.index, "practice")}
+              onClick={() => onToggle(sentence, "practice")}
               aria-label="练习"
               title="练习"
             >
@@ -178,25 +261,31 @@ function SentenceBlock({
 
         {state.mode === "analyze" && (
           <div className="rounded-md border bg-muted/40 p-3 space-y-2 text-sm">
-            <div className="flex items-center gap-2">
-              <Badge variant="outline">语法</Badge>
-              <span className="text-muted-foreground">
-                {sentence.grammarTag ?? "—"}
-              </span>
+            {!analyze || analyze.status === "loading" ? (
+              <div className="text-muted-foreground italic">解析中…</div>
+            ) : analyze.status === "error" ? (
+              <div className="text-destructive text-xs">
+                解析失败：{analyze.error}
+                <div className="mt-1 text-muted-foreground not-italic">
+                  检查 <code>.env.local</code> 是否配置了
+                  <code>DEEPSEEK_API_KEY</code>。
+                </div>
+              </div>
+            ) : (
+              <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                {analyze.content}
+              </pre>
+            )}
+            <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1 border-t border-border/40">
+              <Badge variant="outline">参考</Badge>
+              <span>语法点：{sentence.grammarTag ?? "—"}</span>
+              <span>·</span>
+              <span>翻译：{sentence.translationHint ?? "—"}</span>
             </div>
-            <div className="flex items-start gap-2">
-              <Badge variant="outline">参考翻译</Badge>
-              <span>{sentence.translationHint ?? "—"}</span>
-            </div>
-            <p className="text-xs text-muted-foreground italic">
-              v0.1：接 LLM 后这里会显示「语法结构 + 词汇 + 搭配 + 类似表达 + 难度评级」的完整详解。
-            </p>
           </div>
         )}
 
-        {state.mode === "practice" && (
-          <PracticePanel sentence={sentence} />
-        )}
+        {state.mode === "practice" && <PracticePanel sentence={sentence} />}
       </CardContent>
     </Card>
   );
@@ -204,7 +293,37 @@ function SentenceBlock({
 
 function PracticePanel({ sentence }: { sentence: SampleSentence }) {
   const [answer, setAnswer] = useState("");
-  const [submitted, setSubmitted] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!answer.trim()) return;
+    setLoading(true);
+    setFeedback(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/practice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sentence: sentence.original,
+          grammarTag: sentence.grammarTag,
+          userAnswer: answer,
+        }),
+      });
+      const json = (await res.json()) as { content?: string; error?: string };
+      if (!res.ok || json.error) {
+        setError(json.error ?? `HTTP ${res.status}`);
+      } else {
+        setFeedback(json.content ?? "");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="rounded-md border bg-muted/40 p-3 space-y-3 text-sm">
@@ -214,7 +333,7 @@ function PracticePanel({ sentence }: { sentence: SampleSentence }) {
       </div>
       <div>
         <div className="text-xs text-muted-foreground mb-1">
-          A. 用相同语法点造一句新的话
+          用相同语法点造一句新的话
         </div>
         <textarea
           value={answer}
@@ -226,66 +345,124 @@ function PracticePanel({ sentence }: { sentence: SampleSentence }) {
         <div className="mt-2 flex items-center gap-2">
           <Button
             size="sm"
-            onClick={() => setSubmitted(true)}
-            disabled={!answer.trim()}
+            onClick={submit}
+            disabled={!answer.trim() || loading}
           >
-            提交
+            {loading ? "批改中…" : "提交"}
           </Button>
-          {submitted && (
-            <span className="text-xs text-muted-foreground italic">
-              v0.1：接 LLM 后这里会返回纠正、地道说法、错误统计。
-            </span>
+          {error && (
+            <span className="text-xs text-destructive">{error}</span>
           )}
         </div>
       </div>
+      {feedback && (
+        <div className="rounded-md bg-background border p-3 text-sm">
+          <pre className="whitespace-pre-wrap font-sans leading-relaxed">
+            {feedback}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
 
 function DictionaryPopover({
   popover,
+  lookup,
   onClose,
 }: {
   popover: WordPopover;
+  lookup: LookupState;
   onClose: () => void;
 }) {
+  // Clamp popover to viewport so it never falls off the right edge.
+  const ref = useRef<HTMLDivElement>(null);
+  const [adjusted, setAdjusted] = useState({ x: popover.x, y: popover.y });
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    const overflowX = rect.right - (window.innerWidth - 8);
+    setAdjusted({
+      x: overflowX > 0 ? popover.x - overflowX : popover.x,
+      y: popover.y,
+    });
+  }, [popover.x, popover.y]);
+
   return (
     <div
-      className="fixed z-50 w-72 rounded-lg border bg-popover text-popover-foreground shadow-lg p-4 space-y-3"
-      style={{ left: popover.x, top: popover.y }}
+      ref={ref}
+      className="absolute z-50 w-80 rounded-lg border bg-popover text-popover-foreground shadow-lg p-4 space-y-3"
+      style={{ left: adjusted.x, top: adjusted.y }}
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="flex items-baseline justify-between">
-        <span className="font-heading text-lg font-semibold">
-          {popover.word}
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="font-heading text-lg font-semibold break-all">
+          {lookup.data?.word ?? popover.word}
         </span>
-        <button
-          onClick={onClose}
-          className="text-muted-foreground hover:text-foreground text-sm"
-          aria-label="关闭"
-        >
-          ✕
-        </button>
-      </div>
-      <div className="text-sm space-y-2">
-        <p className="text-muted-foreground italic text-xs">
-          v0.1：接 LLM 后这里会显示「词性 + 中/英释义 + 3 个搭配 + 2 个例句 + 变格变位表」。
-        </p>
-        <p className="text-xs">
-          双击查词的交互模式参考自{" "}
-          <a
-            href="https://github.com/HashBrowns-fries/Lumina"
-            className="underline"
-            target="_blank"
-            rel="noreferrer"
+        <div className="flex items-center gap-2">
+          {lookup.data?.pos && (
+            <Badge variant="outline" className="text-xs">
+              {lookup.data.pos}
+            </Badge>
+          )}
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground text-sm"
+            aria-label="关闭"
           >
-            Lumina
-          </a>
-          。
-        </p>
+            ✕
+          </button>
+        </div>
       </div>
-      <Button size="sm" variant="outline" className="w-full">
-        + 加入复习队列
+
+      {lookup.status === "loading" && (
+        <div className="text-sm text-muted-foreground italic">查询中…</div>
+      )}
+      {lookup.status === "error" && (
+        <div className="text-xs text-destructive">
+          查询失败：{lookup.error}
+        </div>
+      )}
+      {lookup.status === "ready" && lookup.data && (
+        <div className="space-y-2 text-sm">
+          <p className="font-medium">{lookup.data.meaningZh}</p>
+          {lookup.data.meaningEn && (
+            <p className="text-xs text-muted-foreground">
+              {lookup.data.meaningEn}
+            </p>
+          )}
+          {lookup.data.inflection && (
+            <p className="text-xs">
+              <span className="text-muted-foreground">变形：</span>
+              {lookup.data.inflection}
+            </p>
+          )}
+          {lookup.data.collocations?.length > 0 && (
+            <div>
+              <div className="text-xs text-muted-foreground">搭配</div>
+              <ul className="list-disc pl-5 text-xs">
+                {lookup.data.collocations.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {lookup.data.examples?.length > 0 && (
+            <div>
+              <div className="text-xs text-muted-foreground">例句</div>
+              <ul className="list-disc pl-5 text-xs space-y-1">
+                {lookup.data.examples.map((ex, i) => (
+                  <li key={i}>{ex}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      <Button size="sm" variant="outline" className="w-full" disabled>
+        + 加入复习队列（待 Convex 接上）
       </Button>
     </div>
   );

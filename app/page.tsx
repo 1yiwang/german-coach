@@ -1,4 +1,9 @@
 import Link from "next/link";
+
+// Home reads `due review count` from Convex on the client; skip prerender so
+// the missing ConvexProvider at build time doesn't blow up the export.
+export const dynamic = "force-dynamic";
+
 import {
   Card,
   CardContent,
@@ -9,6 +14,7 @@ import {
 import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { sampleArticle } from "@/lib/sample-article";
+import { DueReviewCount } from "@/components/due-review-count";
 
 export default function HomePage() {
   return (
@@ -50,10 +56,7 @@ export default function HomePage() {
             <CardDescription>SM-2 算法智能安排</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="text-3xl font-semibold font-mono">0</div>
-            <p className="text-xs text-muted-foreground">
-              v0.1 还没有真实词条。从精读页面把生词加入复习队列即可。
-            </p>
+            <DueReviewCount />
             <Link
               href="/review"
               className={buttonVariants({ variant: "outline", size: "sm" })}
@@ -78,10 +81,7 @@ export default function HomePage() {
                 {sampleArticle.sentences.length} 句
               </span>
             </div>
-            <Link
-              href="/learn"
-              className={buttonVariants({ size: "sm" })}
-            >
+            <Link href="/learn" className={buttonVariants({ size: "sm" })}>
               打开精读
             </Link>
           </CardContent>
@@ -91,30 +91,33 @@ export default function HomePage() {
       <section>
         <Card>
           <CardHeader>
-            <CardTitle>v0.1 范围</CardTitle>
+            <CardTitle>v0.2 进度</CardTitle>
             <CardDescription>
-              核心体验验证：硬编码一篇文章，跑通逐句解析 + 练习 + 词典浮窗的交互流
+              DeepSeek API 已接 + Convex schema 待 `npx convex dev` 一次性部署
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             <p>
-              本版本不连 PDF 上传，不连 Convex（schema 已搭好，等
+              🔍 / ✏️ / 双击查词 / 对话教练全部调用 DeepSeek（OpenAI 兼容协议）。需要在
+              <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                .env.local
+              </code>
+              里填入
+              <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                DEEPSEEK_API_KEY
+              </code>
+              。
+            </p>
+            <p>
+              /review 从 Convex `words` 表读。如果首次跑，先
               <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
                 npx convex dev
               </code>
-              首次部署），LLM 解析按钮先返回 placeholder。SM-2 算法已经移植自
-              Lumina，可在
+              建 deployment，再
               <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
-                lib/srs.ts
+                npx convex run seed:run
               </code>
-              查看。
-            </p>
-            <p>
-              路线图见
-              <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">
-                D:\My Second Brain\10-PROJECTS\german-coach\design.md
-              </code>
-              。
+              写入 demo 数据。
             </p>
           </CardContent>
         </Card>
