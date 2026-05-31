@@ -22,6 +22,7 @@ export const metadata: Metadata = {
 const navItems = [
   { href: "/", label: "首页" },
   { href: "/learn", label: "精读" },
+  { href: "/listen", label: "听力" },
   { href: "/chat", label: "对话" },
   { href: "/review", label: "复习" },
 ];
