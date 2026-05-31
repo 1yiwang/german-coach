@@ -13,7 +13,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import ffmpegPath from "ffmpeg-static";
 
 const AUDIO_DIR = path.join(process.cwd(), "public", "audio", "B1 listening mp3");
@@ -27,24 +27,18 @@ const OUT_PATH = path.join(
 
 function probeDurationSec(file: string): number {
   if (!ffmpegPath) throw new Error("ffmpeg-static not resolved");
-  // ffmpeg writes "Duration: HH:MM:SS.SS" to stderr.
-  const output = execFileSync(ffmpegPath, ["-i", file, "-f", "null", "-"], {
+  // ffmpeg writes "Duration: HH:MM:SS.SS" to stderr. We discard the captured
+  // stdout (likely empty) and re-spawn via spawnSync to capture stderr cleanly.
+  execFileSync(ffmpegPath, ["-i", file, "-f", "null", "-"], {
     encoding: "utf-8",
     stdio: ["ignore", "ignore", "pipe"],
   });
-  // execFileSync returns stdout by default; we read stderr via shell catch:
-  return parseDurationFromStderr(file, output);
+  return parseDurationFromStderr(file);
 }
 
-function parseDurationFromStderr(file: string, _output: string): number {
-  // Fallback: spawn ffmpeg manually and grep stderr.
-  const child = require("node:child_process").spawnSync(ffmpegPath, [
-    "-i",
-    file,
-    "-f",
-    "null",
-    "-",
-  ]);
+function parseDurationFromStderr(file: string): number {
+  if (!ffmpegPath) throw new Error("ffmpeg-static not resolved");
+  const child = spawnSync(ffmpegPath, ["-i", file, "-f", "null", "-"]);
   const stderr = (child.stderr ?? Buffer.from("")).toString("utf-8");
   const m = stderr.match(/Duration:\s+(\d{2}):(\d{2}):(\d{2}\.\d+)/);
   if (!m) throw new Error(`Can't parse duration for ${file}`);

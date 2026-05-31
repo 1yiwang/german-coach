@@ -17,7 +17,7 @@
 import { config } from "dotenv";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createClient } from "@supabase/supabase-js";
 import ffmpegPath from "ffmpeg-static";
 
@@ -191,7 +191,7 @@ function detectSilences(
   if (!ffmpegPath) throw new Error("ffmpeg-static did not resolve to a path");
   const noiseDb = opts.noiseDb ?? -32;
   const minDur = opts.minDurationSec ?? 0.15;
-  const child = require("node:child_process").spawnSync(ffmpegPath, [
+  const child = spawnSync(ffmpegPath, [
     "-i",
     mp3In,
     "-af",

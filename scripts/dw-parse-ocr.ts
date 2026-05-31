@@ -136,7 +136,7 @@ function findAllTextHeaders(pageN: number, lines: string[]): TextHeaderHit[] {
       pageN,
       lineIdx: i,
       trackRaw: trackMatch[1],
-      trackNumber: correctTrackOcr(trackDigits, window),
+      trackNumber: correctTrackOcr(trackDigits),
       übungNumber: correctUebungOcr(secMatch[1], window),
       part: secMatch[2].toLowerCase() as "a" | "b" | "c",
     });
@@ -210,61 +210,15 @@ function correctUebungOcr(raw: string, contextLine: string): number {
 // (e.g. ">55" when the printed marker was actually "▶ 5"). We accept the raw
 // value here and let the post-processing pass fix any outliers using
 // monotonicity + audio durations across all detected Text pages.
-function correctTrackOcr(rawDigits: string, _contextLine: string): number {
+function correctTrackOcr(rawDigits: string): number {
   return Number(rawDigits);
 }
 
-function stripFooter(meta: PageMeta): string[] {
-  if (!meta.chapterLetter) return meta.lines;
-  // Drop the last 1-3 lines that look like footer + chapter label.
-  const lines = [...meta.lines];
-  while (lines.length > 0) {
-    const last = lines[lines.length - 1].trim();
-    if (!last) {
-      lines.pop();
-      continue;
-    }
-    if (FOOTER_LEFT_RE.test(last) || FOOTER_RIGHT_RE.test(last)) {
-      lines.pop();
-      continue;
-    }
-    // Lone chapter letter "F" on its own line — Tesseract artifact from the
-    // colored block at the top/bottom corner.
-    if (/^[A-Z]$/.test(last)) {
-      lines.pop();
-      continue;
-    }
-    break;
-  }
-  return lines;
-}
-
-function stripHeader(lines: string[], headerLineIdx?: number): string[] {
-  // If we know exactly which line contained the Text header, body starts
-  // on the next line — easy.
-  if (headerLineIdx !== undefined) {
-    return lines.slice(headerLineIdx + 1);
-  }
-  // Otherwise, drop leading garbage up through the first section header.
-  const out = [...lines];
-  while (out.length > 0) {
-    const first = out[0].trim();
-    if (!first) {
-      out.shift();
-      continue;
-    }
-    if (/^[A-Z]$/.test(first) || /^[>▶»]+\s*\d+\s*$/.test(first)) {
-      out.shift();
-      continue;
-    }
-    if (SECTION_RE.test(first) || TRACK_RE.test(first)) {
-      out.shift();
-      break;
-    }
-    break;
-  }
-  return out;
-}
+// NOTE: `stripFooter` / `stripHeader` helper candidates previously lived
+// here, but they were never wired in (the text-layer parser in
+// `dw-parse-pdf-text.ts` handles body extraction more reliably). Removed
+// in R1 lint cleanup; reinstate from git history if a future OCR-only run
+// needs them.
 
 function joinBody(lines: string[]): string {
   // Tesseract breaks paragraphs into lines wherever the layout has a soft

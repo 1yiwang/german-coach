@@ -72,6 +72,11 @@ export default function ReviewPage() {
   }, []);
 
   useEffect(() => {
+    // Bootstrap fetch on mount — loadDue is async and updates state
+    // via setWords/setLoadError. New lint rule flags this as a
+    // synchronous setState in effect, but it's the standard "load on
+    // mount" pattern for client-side data fetching here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadDue();
   }, [loadDue]);
 
