@@ -15,13 +15,15 @@
     "dw:pdf-extract": "tsx scripts/dw-pdf-extract.ts",
     "dw:parse": "tsx scripts/dw-parse-pdf-text.ts",
     "dw:parse:ocr": "tsx scripts/dw-parse-ocr.ts",
-    "dw:batch-import": "tsx scripts/dw-batch-import.ts"
+    "dw:batch-import": "tsx scripts/dw-batch-import.ts",
+    "tg:bot": "tsx scripts/tg-bot.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
     "@supabase/supabase-js": "^2.106.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "grammy": "^1.43.0",
     "lucide-react": "^1.17.0",
     "next": "16.2.6",
     "react": "19.2.4",

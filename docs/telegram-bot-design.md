@@ -1,7 +1,27 @@
 # German Coach — Telegram Bot 设计文档
 
 > 版本：v1.0 · 2026-05-31
-> 状态：设计已完成，待实现
+> 状态：MVP 实现中（先本地跑，稳定后上 Railway）
+
+---
+
+## 0. MVP 决定（2026-05-31 晚）
+
+先做 **B+C 混合提醒**，不做 Telegram 内直接答题：
+
+- **08:00**：摘要消息（C）。列出今日 due 总数、单词数、句子数、前几个词/句。
+- **12:00 / 18:00 / 21:00**：单卡预览（B）。每次最多 3 张，显示词/句内容 + `Zur Wiederholung` 按钮跳回 App。
+- **每天推送**：包括周末。
+- **Bot 单独新建**：不用别的项目的 Telegram bot，避免人设/命令/上下文污染。
+- **SDK**：用 `grammy`（TypeScript-native），不是旧设计里的 `node-telegram-bot-api`。
+- **部署**：先本地 `npm run tg:bot` 跑 1-2 天验证体验；稳定后上 Railway，这样电脑关机也能推。
+- **防重复**：`notifications_log` 用 `(chat_id, item_type, item_id, window_key)` 去重。
+- **订阅方式**：用户给 bot 发 `/start`，自动把 `chat_id` 写入 `tg_subscribers`。
+
+当前 MVP 不做：
+- Telegram 内直接评分（以后可做 callback button + SM-2 写回）。
+- DeepSeek 双向聊天。
+- 主动教学。
 
 ---
 
