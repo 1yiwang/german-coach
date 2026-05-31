@@ -11,6 +11,10 @@ import {
   type LookupState,
   type WordPopover,
 } from "@/components/dictionary-popover";
+import {
+  ArticleSummary,
+  type ArticleSummaryStats,
+} from "@/components/article-summary";
 import { cn } from "@/lib/utils";
 import type { SampleSentence } from "@/lib/sample-article";
 import type {
@@ -91,7 +95,6 @@ interface ListenClientProps {
 }
 
 export function ListenClient({
-  docId,
   title,
   level,
   source,
@@ -144,6 +147,7 @@ export function ListenClient({
   // cosmetic: no extra API calls, no schema changes, no SRS coupling.
   const [sessionReplayCount, setSessionReplayCount] = useState(0);
   const [sessionBossBreaks, setSessionBossBreaks] = useState(0);
+  const [summaryVisible, setSummaryVisible] = useState(false);
 
   // <audio> element when this sentence has a real audio_url. Hung off a ref so
   // play/pause/cleanup don't trigger React re-renders.
@@ -174,6 +178,62 @@ export function ListenClient({
     const hpPct =
       sentences.length > 0 ? Math.round((mastered / sentences.length) * 100) : 0;
     return { mastered, learning, hpPct };
+  }, [progressMap, sentences]);
+
+  const articleSummary = useMemo<ArticleSummaryStats>(() => {
+    const reviewedSentences = sentences
+      .map((sentence) => {
+        if (!sentence.id) return null;
+        const progress = progressMap[sentence.id];
+        if (!progress) return null;
+        return {
+          index: sentence.index,
+          text: sentence.original,
+          repetitions: progress.repetitions,
+          status: progress.status,
+          lastReview: progress.lastReview,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+    const masteredCount = reviewedSentences.filter(
+      (item) => item.status === "mastered",
+    ).length;
+    const learningCount = reviewedSentences.filter(
+      (item) => item.status === "learning",
+    ).length;
+    const skippedCount = reviewedSentences.filter(
+      (item) => item.status === "skipped",
+    ).length;
+
+    const reviewedAt = reviewedSentences
+      .map((item) => item.lastReview)
+      .filter((value): value is number => value !== undefined);
+    const firstReviewAt =
+      reviewedAt.length > 0 ? Math.min(...reviewedAt) : undefined;
+    const lastReviewAt =
+      reviewedAt.length > 0 ? Math.max(...reviewedAt) : undefined;
+
+    const hardestSentences = reviewedSentences
+      .filter((item) => item.repetitions > 0)
+      .sort((a, b) => b.repetitions - a.repetitions)
+      .slice(0, 3);
+
+    const newCount = Math.max(
+      0,
+      sentences.length - masteredCount - learningCount - skippedCount,
+    );
+
+    return {
+      totalSentences: sentences.length,
+      masteredCount,
+      learningCount,
+      skippedCount,
+      newCount,
+      firstReviewAt,
+      lastReviewAt,
+      hardestSentences,
+    };
   }, [progressMap, sentences]);
 
   // SM-2 state for preview labels on the rating buttons. Mirrors the
@@ -361,6 +421,7 @@ export function ListenClient({
       if (bossWasActive && (rating === "good" || rating === "easy")) {
         setSessionBossBreaks((count) => count + 1);
       }
+      if (isLast) setSummaryVisible(true);
       toast.success(
         `Gespeichert · nächste Wiederholung in ${formatIntervalDays(json.interval)}`,
         {
@@ -853,31 +914,25 @@ export function ListenClient({
         </Button>
       </div>
 
-      {isLast && (
-        <Card className="border-dashed">
-          <CardContent className="text-sm text-muted-foreground text-center">
-            🎉 Geschafft! Du kannst
-            <Link
-              href={`/listen?id=${docId}`}
-              className="mx-1 underline hover:text-foreground"
-              onClick={(e) => {
-                e.preventDefault();
-                setCurrentIndex(0);
-              }}
-            >
-              von vorn beginnen
-            </Link>
-            oder zu
-            <Link
-              href="/review"
-              className="mx-1 underline hover:text-foreground"
-            >
-              /review
-            </Link>
-            gehen, um die gespeicherten Wörter zu wiederholen.
-          </CardContent>
-        </Card>
-      )}
+      {isLast &&
+        (summaryVisible ? (
+          <ArticleSummary
+            title={title}
+            stats={articleSummary}
+            sessionReplayCount={sessionReplayCount}
+            sessionBossBreaks={sessionBossBreaks}
+            onRestart={() => {
+              setSummaryVisible(false);
+              setCurrentIndex(0);
+            }}
+          />
+        ) : (
+          <Card className="border-dashed">
+            <CardContent className="text-center text-sm text-muted-foreground">
+              Bewerte den letzten Satz, um den Kampfbericht zu sehen.
+            </CardContent>
+          </Card>
+        ))}
 
       {popover && lookup && (
         <DictionaryPopover
