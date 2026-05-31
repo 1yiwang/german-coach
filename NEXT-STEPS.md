@@ -5,6 +5,41 @@
 
 ---
 
+## 🎯 当前焦点 · Phase A · Resume-Ready MVP（2026-05-31 夜确认）
+
+**目标：** 把项目做到可以放进简历 + 给招聘者一个 live demo 链接。
+
+**核心架构决定（用户确认）：** 不做传统多用户 auth，做 **"Owner + Viewer"** 模式：
+- **Owner（你自己）**：通过 secret cookie 识别，可以读写所有数据
+- **Viewer（访客）**：任何打开 link 的人，只读看你的真实学习数据（精听文库、热力图、文章页都可以浏览），所有写操作（评分、跳过、加单词）返回 403
+- 不引入 Supabase Auth / NextAuth，纯 cookie + middleware 实现，约 2-3h
+
+**Phase A 执行顺序（不要跳序）：**
+
+| # | 任务 | 估时 | 状态 | 备注 |
+|---|------|------|------|------|
+| **R1** | 修剩余 lint 错误（`app/review/page.tsx` 1 个 + 3 个旧脚本 `require()`） | 30 min | ⏳ 进行中 | 招聘者会跑 `npm run lint` |
+| **S8** | Goethe Wortliste 解析（B1 + B2 PDF → JSON） | 2-3h | ⏸️ 待做 | 用户明确说"单词也挺重要的" |
+| **S9** | Edge TTS + Wortliste 入库 + `/review` 卡片流加音频 | 1-1.5h | ⏸️ 待做 | 跟 S8 必须连着做 |
+| **R2** | Viewer mode（轻量方案，**不是** Supabase Auth）：`OWNER_SECRET` env + `/owner-login?token=` 路由 + middleware 拦写操作 + UI 给 viewer 显示 "👁 Read-only" 徽章 | 2-3h | ⏸️ 待做 | 用户没做过 auth，这个方案最简单 |
+| **R4** | 部署 Vercel + 把环境变量配上 + 自定义域名（可选） | 2h | ⏸️ 待做 | Telegram bot 暂留本地或部署 Railway |
+| **R5** | 重写 README：一句话价值主张 + GIF/截图 + 技术栈 + 架构图 + Live demo + Setup | 3-4h | ⏸️ 待做 | GitHub 第一印象，影响 80% 招聘者是否继续看 |
+
+**做完 Phase A 简历可以写：**
+> *German Coach — Full-stack AI-augmented language learning platform (Next.js 16, Supabase, DeepSeek LLM, Edge Neural TTS, Telegram Bot, local Whisper). Live: \_\_\_\_ · Source: \_\_\_\_*
+
+### Phase A 之后 · 可选的 "Wow Factor"（Phase B）
+
+| 选项 | 估时 | 简历加分点 | 推荐度 |
+|------|------|-----------|--------|
+| **B-i 周报 Agent**（cron 跑 LLM 分析 study_log / sentence_progress → Telegram 推周报） | 4-5h | "Built an LLM agent that analyzes user learning patterns and generates weekly insights" | ⭐⭐⭐⭐⭐ |
+| **B-ii S11 对话练习 v1** | 3-4h | "Designed context-aware LLM chat grounded in user's learning data" | ⭐⭐⭐ |
+| **B-iii S10 徽章 + /stats** | 2h | 视觉加分，但简历价值低 | ⭐⭐ |
+
+**推荐：** Phase A 完了，做 B-i 周报 Agent 作为差异化亮点，因为 "LLM agent" 是简历上最值钱的关键词，工作量也最小。
+
+---
+
 ## 🆕 2026-05-31 夜：产品定位重置 + 三个 P0
 
 ### 产品定位变化（基于 Sesame.com 调研）
@@ -866,16 +901,25 @@ CREATE TABLE user_badges (
 
 **接下来按这个顺序做，不要跳序：**
 
+> **顺序说明：** 当前焦点是 **Phase A · Resume MVP**（见文档顶部）。R 系列任务（部署相关）和 S8/S9（单词表）穿插执行，详见顶部表格。S10–S12 放到 Phase A 之后。
+
 | # | Step | 目标 | 关键改动 | 预估 | 何时 commit |
 |---|------|------|---------|------|------------|
 | ~~S2~~ | ~~🏰 **文库 BOSS 地图**~~ | ✅ 已完成（`5820e40`） |
 | ~~S3~~ | ~~⚔️ **精听 BOSS 战 UI 轻量版**~~ | ✅ 已完成（`53a039c`） |
 | ~~S4~~ | ~~📊 **`study_log` + 首页热力图**~~ | ✅ 已完成（`c37f418` + heatmap UX 迭代） |
 | ~~S5~~ | ~~🎉 **文章完成结算页**~~ | ✅ 已完成（`d2e0736`） |
-| ~~S7~~ | ~~📖 **Shadow 模式 + 键盘快捷键**~~ | ✅ 已完成 |
-| **S8** | 📚 **Goethe Wortliste 解析**（P0-b 旧 Step 4） | 解析 B1 + B2 PDF 输出 `_wortliste-b1.json` / `_wortliste-b2.json` | `scripts/wl-parse-goethe.ts` | 2–3h | commit |
-| **S9** | 🔊 **Edge TTS + Wortliste 入库**（P0-b 旧 Step 5） | 批量 MP3 + `words` 表加 audio 字段 + `/review` 卡片流改造 | `scripts/wl-tts-edge.ts` + `scripts/seed-wortliste.ts` + `0006_words_audio_pos.sql` | 1–1.5h | commit |
-| **S10** | 🏅 **徽章 / 独立统计页**（游戏化 P2，可选） | `user_badges` 表 + `/stats` 路由（徽章墙 + 文库总览 + 本周折线） | `supabase/migrations/0007_user_badges.sql` + `app/stats/page.tsx` | 2h | commit |
+| ~~S7~~ | ~~📖 **Shadow 模式 + 键盘快捷键**~~ | ✅ 已完成（`18429cb`） |
+| **R1** | 🧹 **修剩余 lint 错误**（Phase A） | `app/review/page.tsx` 1 个 `set-state-in-effect` + 3 个旧脚本 `require()` 改 `import` | 30 min | commit |
+| **S8** | 📚 **Goethe Wortliste 解析**（Phase A） | 解析 B1 + B2 PDF 输出 `_wortliste-b1.json` / `_wortliste-b2.json` | `scripts/wl-parse-goethe.ts` | 2–3h | commit |
+| **S9** | 🔊 **Edge TTS + Wortliste 入库**（Phase A） | 批量 MP3 + `words` 表加 audio 字段 + `/review` 卡片流改造 | `scripts/wl-tts-edge.ts` + `scripts/seed-wortliste.ts` + `0006_words_audio_pos.sql` | 1–1.5h | commit |
+| **R2** | 👁 **Owner + Viewer mode**（Phase A） | `OWNER_SECRET` env + `/owner-login?token=` 路由 + `middleware.ts` 拦写操作 + UI 显示 read-only 徽章；**不是** Supabase Auth | `middleware.ts` + `lib/auth/owner.ts` + 所有 `/api/*` route handler 加 owner check | 2–3h | commit |
+| **R4** | 🚀 **Vercel 部署**（Phase A） | 环境变量配置 + 域名 | （配置） | 2h | （部署） |
+| **R5** | 📝 **重写 README**（Phase A） | 一句话价值主张 + 截图 GIF + 技术栈 + 架构图 + Live demo link + Setup | `README.md` | 3–4h | commit |
+| **B-i** | 🤖 **周报 Agent**（Phase B · 推荐） | Vercel cron 每周日跑 → LLM 分析 study_log + sentence_progress → Telegram 推送 | `app/api/cron/weekly-report/route.ts` + `lib/llm.ts`（新 prompt） | 4–5h | commit |
+| **S10** | 🏅 **徽章 / 独立统计页**（Phase C 可选） | `user_badges` 表 + `/stats` 路由（徽章墙 + 文库总览 + 本周折线） | `supabase/migrations/0007_user_badges.sql` + `app/stats/page.tsx` | 2h | commit |
+| **S11** | 💬 **对话练习 v1（文字版）**（Phase C 可选） | `/chat` 注入今天的 `sentence_progress` + Schwer 句作为 system context；LLM 围绕这些内容设计场景对话；纯文字，不加语音 | `app/chat/page.tsx` + `lib/db/listen-progress.ts`（新增 `getTodayStudyContext`） + `lib/llm.ts`（动态 prompt 模板） | 3–4h | commit |
+| **S12** | 🎤 **对话练习 v2（语音输入，可选）**（Phase C 可选） | 在 S11 上加 Web Speech API `SpeechRecognition` 麦克风按钮 + 语音波形 UI；不做 streaming | `app/chat/page.tsx` | 2h | commit |
 
 ### 整合后的核心原则
 
@@ -889,6 +933,76 @@ CREATE TABLE user_badges (
 
 1. `sentence_progress` 目前没有 `play_count` 字段。S3 的"重听次数"先用前端 session state；如果以后真要持久化，再加字段。
 2. 游戏化文档说"不新增 API"——S4 的 `study_log` 需要在评级时写入，最干净的做法是 `app/api/listen-progress/record` 里同时更新 `study_log`（不增加新路由，但要扩展现有 route）。
+
+---
+
+## 💬 S11 / S12 详细方案 · 个性化德语对话练习
+
+> **状态：** ✅ 已正式排入路线图（S11 = 文字版 MVP, S12 = 语音输入可选 polish）。优先级在 S8 / S9 / S10 之后。最早 2026-06-01 提出灵感，2026-05-31 夜与用户讨论后确认形态。
+
+### 为什么做这个
+
+现有 AI 口语工具的问题：**不知道你学过什么，只能聊通用话题**。我们有 `sentence_progress`、`words`、`study_log` 三张表，可以把"今天学了什么 / 哪些句子标 Schwer / 哪些单词反复 again"喂进 system prompt，让 LLM 围绕真实学习内容设计对话。这构成 **精听输入 → 对话巩固 → SRS 不忘记** 的闭环。
+
+### 核心设计（共两阶段）
+
+#### S11 · 文字版 MVP
+
+```
+你打开 /chat
+   ↓
+后端（/api/chat 改造）调 lib/db/listen-progress.getTodayStudyContext(userId)
+   返回：
+   {
+     todayArticles: [{title, sourceRef, hardSentences: [...]}],
+     todayHardSentences: [3 句最近标 Schwer/Nochmal 的句子],
+     dueWords: [今天到期的 5 个单词]
+   }
+   ↓
+lib/llm 用动态模板拼 system prompt：
+   "用户今天在 'Im Restaurant' 这篇里把以下 3 句标成了 Schwer：
+    1. ...
+    2. ...
+    请扮演 Café Wien 的友好服务员，自然地把这些句子嵌进对话；
+    用户回复后给出简洁纠正（max 2 行），不要变成语法老师；
+    保持轻松，每轮控制在 3 句话以内。"
+   ↓
+Bot 开场："Hallo! Setz dich, ich bring dir gleich die Karte. Was möchtest du trinken?"
+你打字回复
+Bot 纠正 + 自然推进对话
+```
+
+**文件改动：**
+- `lib/db/listen-progress.ts` — 新增 `getTodayStudyContext(userId)`，读 `sentence_progress` 最近 24h `status='learning'` + `repetitions >= 2` 的句子，关联 `sentences.original` + `documents.title`
+- `lib/llm.ts` — 把 chat system prompt 从固定字符串改为接受 `{context}` 参数的模板函数
+- `app/api/chat/route.ts` — 调用上面两个，拼好 prompt 再传给 DeepSeek
+- `app/chat/page.tsx` — UI 加一个折叠式 "📚 今日上下文" 让用户看到 bot 知道什么（透明度 = 信任）
+
+**估时：** 3-4h
+
+#### S12 · 语音输入（可选 polish）
+
+在 S11 之上加一个麦克风按钮：
+- `webkitSpeechRecognition` (Chrome / Edge) → 转文字 → 走 S11 同样的对话流
+- 不支持的浏览器隐藏按钮，保持文字 fallback
+- 不做 streaming，不做语音输出（Bot 回复仍是文字，避免 OpenAI Realtime / Sesame 那种重度依赖）
+
+**估时：** 2h
+
+### 明确不做的
+
+- ❌ 不训练语音模型（Sesame / OpenAI 已做到顶级，不重复）
+- ❌ 不做实时双向语音流（DeepSeek 不支持，做了也比不过 Sesame）
+- ❌ 不做语音唤醒
+- ❌ S11 阶段不让 bot 用语音回复（增加复杂度收益小）
+
+### Prompt 设计原则（重要）
+
+学到的教训：**"AI 老师" prompt 会让 LLM 变话痨**。S11 的 prompt 要写成 **"AI 同学 / 友好场景角色"**，硬性约束：
+1. 每轮回复 ≤ 3 句德语
+2. 纠正放在德语回复之后，单独 1 行，中文，max 30 字
+3. 不主动讲语法理论，除非用户明确问
+4. 角色保持一致（服务员就是服务员，不要中途变老师）
 
 ---
 
