@@ -73,6 +73,7 @@ export default async function ListenPage({ searchParams }: ListenPageProps) {
     original: s.original,
     translationHint: s.translation,
     grammarTag: s.grammar,
+    audioUrl: s.audioUrl,
   }));
 
   if (sentences.length === 0) {

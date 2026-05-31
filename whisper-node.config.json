@@ -1,0 +1,11 @@
+{
+  "modelName": "base",
+  "whisperOptions": {
+    "language": "de",
+    "word_timestamps": false
+  },
+  "shellOptions": {
+    "silent": true,
+    "async": false
+  }
+}

@@ -114,6 +114,7 @@ export interface CreateDocumentInput {
     original: string;
     translation?: string;
     grammar?: string;
+    audioUrl?: string;
   }[];
 }
 
@@ -142,6 +143,7 @@ export async function createDocument(
       original: s.original,
       translation: s.translation ?? null,
       grammar: s.grammar ?? null,
+      audio_url: s.audioUrl ?? null,
       mastery: 0,
     }));
     const { error: sErr } = await sb.from("sentences").insert(rows);

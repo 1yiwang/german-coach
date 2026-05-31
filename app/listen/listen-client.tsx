@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,35 +37,73 @@ export function ListenClient({
   const [addedWords, setAddedWords] = useState<Set<string>>(new Set());
   const [popover, setPopover] = useState<WordPopover | null>(null);
   const [lookup, setLookup] = useState<LookupState | null>(null);
+  // Speed control applies to BOTH real audio (HTMLAudioElement.playbackRate)
+  // and TTS (SpeechSynthesisUtterance.rate). 1.0 is natural, 0.75 is study pace.
+  const [playbackRate, setPlaybackRate] = useState(1.0);
+
+  // <audio> element when this sentence has a real audio_url. Hung off a ref so
+  // play/pause/cleanup don't trigger React re-renders.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const currentSentence = sentences[currentIndex];
   const isFirst = currentIndex === 0;
   const isLast = currentIndex === sentences.length - 1;
   const ttsAvailable =
     typeof window !== "undefined" && "speechSynthesis" in window;
+  const hasRealAudio = Boolean(currentSentence?.audioUrl);
 
-  // Per-sentence reset: kill any in-flight TTS + collapse panels.
-  useEffect(() => {
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+  const stopSpeaking = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
     }
     setIsPlaying(false);
+  }, []);
+
+  // Per-sentence reset: kill any in-flight playback + collapse panels.
+  useEffect(() => {
+    stopSpeaking();
     setShowText(false);
     setAnalysis(null);
     setIsAnalyzing(false);
     setAnalysisError(null);
-  }, [currentIndex]);
+  }, [currentIndex, stopSpeaking]);
 
   // Component unmount: stop any speech.
   useEffect(() => {
     return () => {
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-      }
+      if (typeof window === "undefined") return;
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      if (audioRef.current) audioRef.current.pause();
     };
   }, []);
 
+  // Keep the live <audio> element in sync with the speed slider.
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.playbackRate = playbackRate;
+  }, [playbackRate]);
+
   const speak = useCallback(() => {
+    if (!currentSentence) return;
+    // Real publisher audio takes priority over OS TTS — voice quality + natural
+    // pacing are dramatically better, and `?audio_url` is what gets stored once
+    // a document is imported via `scripts/import-aligned.ts`.
+    if (currentSentence.audioUrl) {
+      const el = audioRef.current;
+      if (!el) {
+        toast.error("音频元素未就绪");
+        return;
+      }
+      el.playbackRate = playbackRate;
+      el.currentTime = 0;
+      el.play().catch((err) => {
+        toast.error("播放失败", { description: (err as Error).message });
+        setIsPlaying(false);
+      });
+      return;
+    }
     if (!ttsAvailable) {
       toast.error("当前浏览器不支持 Web Speech API");
       return;
@@ -73,18 +111,12 @@ export function ListenClient({
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(currentSentence.original);
     utter.lang = "de-DE";
-    utter.rate = 0.8;
+    utter.rate = playbackRate * 0.9;
     utter.onstart = () => setIsPlaying(true);
     utter.onend = () => setIsPlaying(false);
     utter.onerror = () => setIsPlaying(false);
     window.speechSynthesis.speak(utter);
-  }, [currentSentence, ttsAvailable]);
-
-  const stopSpeaking = useCallback(() => {
-    if (!ttsAvailable) return;
-    window.speechSynthesis.cancel();
-    setIsPlaying(false);
-  }, [ttsAvailable]);
+  }, [currentSentence, ttsAvailable, playbackRate]);
 
   const togglePlay = () => {
     if (isPlaying) stopSpeaking();
@@ -299,13 +331,32 @@ export function ListenClient({
             )}
           </div>
 
+          {/* Hidden <audio> element — present whenever this sentence has a
+              real audio_url, controlled imperatively via audioRef. */}
+          {hasRealAudio && (
+            <audio
+              ref={audioRef}
+              src={currentSentence.audioUrl}
+              preload="auto"
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onEnded={() => setIsPlaying(false)}
+              onError={() => {
+                setIsPlaying(false);
+                toast.error("音频加载失败", {
+                  description: currentSentence.audioUrl,
+                });
+              }}
+            />
+          )}
+
           {/* Action buttons */}
-          <div className="flex flex-wrap gap-2 pt-2 border-t border-border/40 max-[480px]:flex-col">
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/40 max-[480px]:flex-col max-[480px]:items-stretch">
             <Button
               size="sm"
               variant={isPlaying ? "default" : "outline"}
               onClick={togglePlay}
-              disabled={!ttsAvailable}
+              disabled={!hasRealAudio && !ttsAvailable}
               title="播放 / 暂停 (Space)"
               className="max-[480px]:w-full"
             >
@@ -332,6 +383,28 @@ export function ListenClient({
                   ? "🔍 已解析"
                   : "🔍 DeepSeek 解析"}
             </Button>
+            <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground max-[480px]:ml-0 max-[480px]:justify-between max-[480px]:pt-1">
+              <span className="font-mono">{playbackRate.toFixed(2)}x</span>
+              <input
+                type="range"
+                min={0.5}
+                max={1.25}
+                step={0.05}
+                value={playbackRate}
+                onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
+                className="w-24 accent-foreground"
+                title="播放速度"
+              />
+              {hasRealAudio ? (
+                <Badge variant="secondary" className="text-[10px]">
+                  真音
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-[10px]">
+                  TTS
+                </Badge>
+              )}
+            </div>
           </div>
 
           {/* Analysis panel */}

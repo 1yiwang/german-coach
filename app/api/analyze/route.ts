@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
     }
     const content = await chatComplete(analyzePrompt(sentence), {
       temperature: 0.2,
-      maxTokens: 900,
+      maxTokens: 1200,
     });
     return NextResponse.json({ content });
   } catch (err) {

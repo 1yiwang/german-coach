@@ -55,3 +55,9 @@ next-env.d.ts
 
 # PowerShell test artifacts
 *.bak
+
+# Local study materials / copyrighted source assets
+public/audio/
+scripts/transcripts/
+scripts/transcriptions/
+scripts/alignments/

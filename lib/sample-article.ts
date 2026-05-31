@@ -10,6 +10,8 @@ export interface SampleSentence {
   original: string;
   translationHint?: string;
   grammarTag?: string;
+  /** Real publisher audio URL; if absent, /listen falls back to browser TTS. */
+  audioUrl?: string;
 }
 
 export interface SampleArticle {
