@@ -858,14 +858,17 @@ CREATE TABLE user_badges (
 
 - ✅ **S1 · 句子评级 + SM-2 连通**（`sentence_progress` 表 + 4 级评分 + Aus-SRS 跳过 + 自动前进 + 德语化 UI）
 - ✅ **S6 · Telegram 推送 MVP**（`@My_German_Coach_bot` + `tg_subscribers` + `notifications_log` + 4 个时间窗调度 + `/start` + `/due`）
+- ✅ **S2 · 🏰 文库 BOSS 地图**（`listLibraryStats()` 聚合 + `LibraryGrid` 关卡卡片 + HP/状态/due/最后复习时间 + 4 个 tab 筛选）
+- ✅ **S3 · 精听 BOSS 战 UI 轻量版**（文章页顶部 HP/已击败/replays/breaks + learning 句子的 ⚡ Spezialangriff 红框提示）
+- ✅ **S4 · `study_log` + 首页热力图**（`study_log` 表 + record API 顺手累计 effort_score + 首页 GitHub 风格 52 周 × 7 天热力图，单元格自适应宽度，周/月标签对齐）
 
 **接下来按这个顺序做，不要跳序：**
 
 | # | Step | 目标 | 关键改动 | 预估 | 何时 commit |
 |---|------|------|---------|------|------------|
-| **S2** | 🏰 **文库 BOSS 地图**（合并旧 Step 2 + 游戏化「文库 = 世界地图」+ 游戏化「文库 BOSS 皮肤」） | `/listen` 列表页改造为 27 篇文章的关卡卡片网格：HP 进度条（已掌握句数 / 总句数）、状态（🎉 已征服 / ⚔️ 战斗中 / 🏚️ 未探索）、待复习角标、快速进入 due 句子 | `app/listen/page.tsx` 重写 + `app/listen/library-grid.tsx` 新建 + `lib/db/listen-progress.ts` 加 `listProgressForAllDocuments()` 聚合查询 | 1.5–2h | 做完后立刻 commit + push |
-| **S3** | ⚔️ **精听 BOSS 战 UI 轻量版**（游戏化「精听 = BOSS 战」纯视觉部分） | 在现有 `/listen?id=` 顶部加 HP 条 + 已击败句数 + 当前 session 重听次数（前端 state） + 困难句进入时红边高亮提示「⚡ BOSS 大招」 | `app/listen/listen-client.tsx` 加 header 区 + 困难句 detect（用 `progressMap[id].status === 'learning'` 判定） | 1h | 做完后 commit + push |
-| **S4** | 📊 **`study_log` + 首页热力图**（游戏化「首页 Dashboard」） | 新增 `study_log` 表（每天一行，effort_score / sentences_studied / sentences_mastered）+ `lib/db/study-log.ts` + `app/api/listen-progress/record` 评级时附带写 study_log + 首页或 `/dashboard` 显示近 90 天 GitHub 样式热力图 + 连击天数 | `supabase/migrations/0005_study_log.sql` + `lib/db/study-log.ts` + `components/heatmap.tsx` + 修 `app/api/listen-progress/record/route.ts` | 2–2.5h | 做完后 commit + push |
+| ~~S2~~ | ~~🏰 **文库 BOSS 地图**~~ | ✅ 已完成（`5820e40`） |
+| ~~S3~~ | ~~⚔️ **精听 BOSS 战 UI 轻量版**~~ | ✅ 已完成（`53a039c`） |
+| ~~S4~~ | ~~📊 **`study_log` + 首页热力图**~~ | ✅ 已完成（`c37f418` + heatmap UX 迭代） |
 | **S5** | 🎉 **文章完成结算页**（游戏化「文章完成结算」） | 文章最后一句评完触发结算 modal：总句数、耗时（基于 `first_learned_at` ~ `last_learned_at`）、最难句 Top 3（按 `repetitions` 排）、对比第一轮重听次数 | `app/listen/listen-client.tsx` 末句逻辑 + `components/article-summary.tsx` | 1.5h | 做完后 commit + push |
 | **S7** | 📖 **Shadow 模式 + 键盘快捷键**（旧 Step 3） | 原文默认隐藏 → 播放 → 自动停顿 N 秒 → 显示原文 + `R/J/K/S/1-4` 快捷键 | `app/listen/listen-client.tsx` | 1h | commit |
 | **S8** | 📚 **Goethe Wortliste 解析**（P0-b 旧 Step 4） | 解析 B1 + B2 PDF 输出 `_wortliste-b1.json` / `_wortliste-b2.json` | `scripts/wl-parse-goethe.ts` | 2–3h | commit |

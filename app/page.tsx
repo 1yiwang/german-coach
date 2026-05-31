@@ -22,7 +22,7 @@ export default async function HomePage() {
   let studyDays: StudyLogDay[] = [];
   let studyLogError: string | null = null;
   try {
-    studyDays = await listRecentStudyLogDays(90);
+    studyDays = await listRecentStudyLogDays(365);
   } catch (err) {
     studyLogError = err instanceof Error ? err.message : String(err);
   }
