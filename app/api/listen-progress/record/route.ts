@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { recordSentenceReview } from "@/lib/db/listen-progress";
+import { recordSentenceStudyEvent } from "@/lib/db/study-log";
 import type { ReviewRating } from "@/lib/srs";
 
 export const runtime = "nodejs";
@@ -24,6 +25,14 @@ export async function POST(req: NextRequest) {
       );
     }
     const result = await recordSentenceReview({ sentenceId, rating });
+    try {
+      await recordSentenceStudyEvent(rating);
+    } catch (err) {
+      // SRS writes are the source of truth. If the optional gamification
+      // log is not migrated yet, keep the rating successful and surface the
+      // issue in server logs only.
+      console.warn("recordSentenceStudyEvent failed:", err);
+    }
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

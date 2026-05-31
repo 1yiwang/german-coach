@@ -15,8 +15,18 @@ import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { sampleArticle } from "@/lib/sample-article";
 import { DueReviewCount } from "@/components/due-review-count";
+import { StudyHeatmap } from "@/components/study-heatmap";
+import { listRecentStudyLogDays, type StudyLogDay } from "@/lib/db/study-log";
 
-export default function HomePage() {
+export default async function HomePage() {
+  let studyDays: StudyLogDay[] = [];
+  let studyLogError: string | null = null;
+  try {
+    studyDays = await listRecentStudyLogDays(90);
+  } catch (err) {
+    studyLogError = err instanceof Error ? err.message : String(err);
+  }
+
   return (
     <div className="flex flex-col gap-8">
       <section className="space-y-2">
@@ -86,6 +96,10 @@ export default function HomePage() {
             </Link>
           </CardContent>
         </Card>
+      </section>
+
+      <section>
+        <StudyHeatmap days={studyDays} loadError={studyLogError} />
       </section>
 
       <section>
