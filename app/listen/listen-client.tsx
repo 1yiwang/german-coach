@@ -29,6 +29,20 @@ import {
 } from "@/lib/srs";
 
 const AUTO_ADVANCE_KEY = "german-coach.listen.autoAdvance";
+const SHADOW_MODE_KEY = "german-coach.listen.shadowMode";
+const SHADOW_REVEAL_DELAY_MS = 1500;
+const LOOP_REPLAY_DELAY_MS = 350;
+
+const SHORTCUT_RATINGS: Record<string, ReviewRating> = {
+  Digit1: "again",
+  Numpad1: "again",
+  Digit2: "hard",
+  Numpad2: "hard",
+  Digit3: "good",
+  Numpad3: "good",
+  Digit4: "easy",
+  Numpad4: "easy",
+};
 
 const RATING_BUTTONS: {
   rating: ReviewRating;
@@ -143,15 +157,29 @@ export function ListenClient({
       return false;
     }
   });
+  const [shadowMode, setShadowMode] = useState(() => {
+    try {
+      return (
+        typeof window !== "undefined" &&
+        window.localStorage.getItem(SHADOW_MODE_KEY) === "1"
+      );
+    } catch {
+      return false;
+    }
+  });
   // S3 · lightweight BOSS fight skin. Session-only counters keep this
   // cosmetic: no extra API calls, no schema changes, no SRS coupling.
   const [sessionReplayCount, setSessionReplayCount] = useState(0);
   const [sessionBossBreaks, setSessionBossBreaks] = useState(0);
   const [summaryVisible, setSummaryVisible] = useState(false);
+  const [repeatCurrent, setRepeatCurrent] = useState(false);
 
   // <audio> element when this sentence has a real audio_url. Hung off a ref so
   // play/pause/cleanup don't trigger React re-renders.
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const revealTimerRef = useRef<number | null>(null);
+  const loopTimerRef = useRef<number | null>(null);
+  const speakRef = useRef<() => void>(() => {});
 
   const currentSentence = sentences[currentIndex];
   const isFirst = currentIndex === 0;
@@ -260,6 +288,14 @@ export function ListenClient({
 
   const stopSpeaking = useCallback(() => {
     if (typeof window === "undefined") return;
+    if (revealTimerRef.current) {
+      window.clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+    if (loopTimerRef.current) {
+      window.clearTimeout(loopTimerRef.current);
+      loopTimerRef.current = null;
+    }
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
     if (audioRef.current) {
       audioRef.current.pause();
@@ -267,6 +303,35 @@ export function ListenClient({
     }
     setIsPlaying(false);
   }, []);
+
+  const handlePlaybackEnded = useCallback(() => {
+    setIsPlaying(false);
+    if (typeof window === "undefined") return;
+
+    if (loopTimerRef.current) {
+      window.clearTimeout(loopTimerRef.current);
+      loopTimerRef.current = null;
+    }
+    if (revealTimerRef.current) {
+      window.clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+
+    if (repeatCurrent) {
+      loopTimerRef.current = window.setTimeout(() => {
+        loopTimerRef.current = null;
+        speakRef.current();
+      }, LOOP_REPLAY_DELAY_MS);
+      return;
+    }
+
+    if (shadowMode) {
+      revealTimerRef.current = window.setTimeout(() => {
+        revealTimerRef.current = null;
+        setShowText(true);
+      }, SHADOW_REVEAL_DELAY_MS);
+    }
+  }, [repeatCurrent, shadowMode]);
 
   // Per-sentence reset: kill any in-flight playback + collapse panels.
   useEffect(() => {
@@ -287,6 +352,8 @@ export function ListenClient({
       if (typeof window === "undefined") return;
       if ("speechSynthesis" in window) window.speechSynthesis.cancel();
       if (audio) audio.pause();
+      if (revealTimerRef.current) window.clearTimeout(revealTimerRef.current);
+      if (loopTimerRef.current) window.clearTimeout(loopTimerRef.current);
     };
   }, []);
 
@@ -307,9 +374,22 @@ export function ListenClient({
     }
   }, [autoAdvance]);
 
+  // Persist shadow mode preference alongside auto-advance.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SHADOW_MODE_KEY, shadowMode ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [shadowMode]);
+
   const speak = useCallback(() => {
     if (!currentSentence) return;
     setSessionReplayCount((count) => count + 1);
+    if (revealTimerRef.current) {
+      window.clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
     // Real publisher audio takes priority over OS TTS — voice quality + natural
     // pacing are dramatically better, and `?audio_url` is what gets stored once
     // a document is imported via `scripts/import-aligned.ts`.
@@ -338,10 +418,14 @@ export function ListenClient({
     utter.lang = "de-DE";
     utter.rate = playbackRate * 0.9;
     utter.onstart = () => setIsPlaying(true);
-    utter.onend = () => setIsPlaying(false);
+    utter.onend = handlePlaybackEnded;
     utter.onerror = () => setIsPlaying(false);
     window.speechSynthesis.speak(utter);
-  }, [currentSentence, ttsAvailable, playbackRate]);
+  }, [currentSentence, ttsAvailable, playbackRate, handlePlaybackEnded]);
+
+  useEffect(() => {
+    speakRef.current = speak;
+  }, [speak]);
 
   const togglePlay = () => {
     if (isPlaying) stopSpeaking();
@@ -525,7 +609,8 @@ export function ListenClient({
     }
   };
 
-  // Keyboard shortcuts: Space=play/pause, ← prev, → next.
+  // Keyboard shortcuts: Space=play/pause, ← prev, → next, R=reveal,
+  // J/K=sentence loop, S=skip, 1-4=ratings.
   // Disabled while a popover is open or focus is in an input (this page has none).
   useEffect(() => {
     if (popover) return;
@@ -546,12 +631,42 @@ export function ListenClient({
         if (!isFirst) goPrev();
       } else if (e.code === "ArrowRight") {
         if (!isLast) goNext();
+      } else if (e.code === "KeyR") {
+        setShowText(true);
+      } else if (e.code === "KeyJ") {
+        setRepeatCurrent(true);
+        if (!isPlaying) speak();
+      } else if (e.code === "KeyK") {
+        setRepeatCurrent(false);
+        stopSpeaking();
+      } else if (e.code === "KeyS") {
+        if (ratingsEnabled && !submittingSkip) void handleToggleSkip();
+      } else {
+        const shortcutRating = SHORTCUT_RATINGS[e.code];
+        if (
+          shortcutRating &&
+          ratingsEnabled &&
+          !isSkipped &&
+          !submittingRating
+        ) {
+          void handleRate(shortcutRating);
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popover, isFirst, isLast, isPlaying, currentSentence]);
+  }, [
+    popover,
+    isFirst,
+    isLast,
+    isPlaying,
+    currentSentence,
+    ratingsEnabled,
+    isSkipped,
+    submittingRating,
+    submittingSkip,
+  ]);
 
   const progressPct = Math.round(
     ((currentIndex + 1) / sentences.length) * 100,
@@ -720,7 +835,7 @@ export function ListenClient({
               preload="auto"
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
-              onEnded={() => setIsPlaying(false)}
+              onEnded={handlePlaybackEnded}
               onError={() => {
                 setIsPlaying(false);
                 toast.error("Audio konnte nicht geladen werden", {
@@ -747,8 +862,23 @@ export function ListenClient({
               variant={showText ? "secondary" : "outline"}
               onClick={() => setShowText((v) => !v)}
               className="max-[480px]:w-full"
+              title="Text zeigen (R)"
             >
               {showText ? "🙈 Text verbergen" : "👁 Text zeigen"}
+            </Button>
+            <Button
+              size="sm"
+              variant={repeatCurrent ? "secondary" : "outline"}
+              onClick={() => {
+                setRepeatCurrent((v) => !v);
+                if (!repeatCurrent && !isPlaying) speak();
+                if (repeatCurrent) stopSpeaking();
+              }}
+              disabled={!hasRealAudio && !ttsAvailable}
+              className="max-[480px]:w-full"
+              title="Satz-Schleife starten/stoppen (J/K)"
+            >
+              {repeatCurrent ? "⏹ Schleife" : "🔁 Schleife"}
             </Button>
             <Button
               size="sm"
@@ -850,6 +980,14 @@ export function ListenClient({
                 >
                   {autoAdvance ? "⏭ Auto-Weiter" : "✋ Manuell"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setShadowMode((v) => !v)}
+                  className="text-muted-foreground hover:text-foreground transition-colors underline-offset-2 hover:underline"
+                  title="Nach dem Hören automatisch kurz warten und Text zeigen"
+                >
+                  {shadowMode ? "📖 Shadow an" : "📕 Shadow aus"}
+                </button>
               </div>
             </div>
             {!ratingsEnabled ? (
@@ -866,7 +1004,7 @@ export function ListenClient({
               </p>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                {ratingPreviews.map((b) => {
+                {ratingPreviews.map((b, index) => {
                   const isSubmitting = submittingRating === b.rating;
                   return (
                     <Button
@@ -882,13 +1020,23 @@ export function ListenClient({
                         {isSubmitting ? "…" : b.label}
                       </span>
                       <span className="text-[10px] font-mono opacity-70">
-                        {b.preview}
+                        {b.preview} · {index + 1}
                       </span>
                     </Button>
                   );
                 })}
               </div>
             )}
+            <details className="rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              <summary className="cursor-pointer font-medium text-foreground">
+                Tastaturhilfe
+              </summary>
+              <p className="mt-2 leading-relaxed">
+                Space = abspielen/pausieren · ←/→ = Satz wechseln · R = Text
+                zeigen · J = Schleife starten · K = Schleife stoppen · S = Aus
+                SRS / wieder aufnehmen · 1/2/3/4 = Nochmal/Schwer/Gut/Einfach.
+              </p>
+            </details>
           </div>
         </CardContent>
       </Card>

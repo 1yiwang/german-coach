@@ -862,6 +862,7 @@ CREATE TABLE user_badges (
 - ✅ **S3 · 精听 BOSS 战 UI 轻量版**（文章页顶部 HP/已击败/replays/breaks + learning 句子的 ⚡ Spezialangriff 红框提示）
 - ✅ **S4 · `study_log` + 首页热力图**（`study_log` 表 + record API 顺手累计 effort_score + 首页 GitHub 风格 52 周 × 7 天热力图，单元格自适应宽度，周/月标签对齐）
 - ✅ **S5 · 文章完成结算页**（`components/article-summary.tsx` + 末句评分后显示 `Kampfbericht`：HP / Dauer / Replays / Breaks / 状态分布 / 最难句 Top 3 / 重启 + 返回 + 复习按钮，纯前端计算，零新表零新 API）
+- ✅ **S7 · Shadow 模式 + 键盘快捷键**（`Shadow an/aus` localStorage 持久化；音频结束后 1.5s 自动揭示原文；`J/K` 单句循环；`R/S/1-4` 快捷键；折叠式 `Tastaturhilfe`）
 
 **接下来按这个顺序做，不要跳序：**
 
@@ -871,7 +872,7 @@ CREATE TABLE user_badges (
 | ~~S3~~ | ~~⚔️ **精听 BOSS 战 UI 轻量版**~~ | ✅ 已完成（`53a039c`） |
 | ~~S4~~ | ~~📊 **`study_log` + 首页热力图**~~ | ✅ 已完成（`c37f418` + heatmap UX 迭代） |
 | ~~S5~~ | ~~🎉 **文章完成结算页**~~ | ✅ 已完成（`d2e0736`） |
-| **S7** | 📖 **Shadow 模式 + 键盘快捷键**（旧 Step 3） | 原文默认隐藏 → 播放 → 自动停顿 N 秒 → 显示原文 + `R/J/K/S/1-4` 快捷键 | `app/listen/listen-client.tsx` | 1h | commit |
+| ~~S7~~ | ~~📖 **Shadow 模式 + 键盘快捷键**~~ | ✅ 已完成 |
 | **S8** | 📚 **Goethe Wortliste 解析**（P0-b 旧 Step 4） | 解析 B1 + B2 PDF 输出 `_wortliste-b1.json` / `_wortliste-b2.json` | `scripts/wl-parse-goethe.ts` | 2–3h | commit |
 | **S9** | 🔊 **Edge TTS + Wortliste 入库**（P0-b 旧 Step 5） | 批量 MP3 + `words` 表加 audio 字段 + `/review` 卡片流改造 | `scripts/wl-tts-edge.ts` + `scripts/seed-wortliste.ts` + `0006_words_audio_pos.sql` | 1–1.5h | commit |
 | **S10** | 🏅 **徽章 / 独立统计页**（游戏化 P2，可选） | `user_badges` 表 + `/stats` 路由（徽章墙 + 文库总览 + 本周折线） | `supabase/migrations/0007_user_badges.sql` + `app/stats/page.tsx` | 2h | commit |
