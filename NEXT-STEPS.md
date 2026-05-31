@@ -1,7 +1,167 @@
 # German Coach — Next Steps
 
-> 版本：v0.2.5 · 技术栈：Next.js 16 + Supabase + DeepSeek + shadcn + Tailwind 4
+> 版本：v0.3（27 篇 B1 精听已入库） · 技术栈：Next.js 16 + Supabase + DeepSeek + shadcn + Tailwind 4
 > ⚠️ **模型限制：** 当前 Cursor 模型不够聪明。指令必须精确到文件路径、组件结构、数据流。不要自作主张，严格按指令做。
+
+---
+
+## 🆕 2026-05-31 夜：产品定位重置 + 三个 P0
+
+### 产品定位变化（基于 Sesame.com 调研）
+
+- **不做**：实时对话语音 / 口语练习 / 聊天语音输入（Sesame 已经做到顶级，不重复造轮子）
+- **不做（短期）**：CSM 声音克隆 / paste-to-learn 流程 / chat tutor prompt 重写
+- **聚焦**：把已有 27 篇 B1 精听做到"很好"、加上单词 SRS、加上 Telegram 主动提醒，让用户每天打开 App / Telegram 就有"该学什么"的明确路径
+
+### P0-a — 精听 UX 升级（27 篇 B1）
+
+**入口改造（`/listen` 列表 → "文库"）**
+- 文章卡片网格，每张显示：
+  - 进度环（已掌握句数 / 总句数）
+  - 上次学习时间
+  - 当前章节 / 文章 level
+  - "下一句 due"的小角标
+- 顶部 tab：`全部 / 进行中 / 待复习 / 已掌握`
+- 卡片角落"快速复习"直接跳到该篇 due 的第一句
+
+**文章学习页（`/listen?id=<docId>` 改造）**
+- 当前句卡片显示 SRS 状态徽章（🌱 新 / 🔄 学习 / ✅ 掌握）
+- **Shadow 模式**（新增）：原文默认隐藏 → 听 → 自动停顿 N 秒 → 显示原文 → 4 级评分
+- 倍速记忆：`per-document` 持久化（localStorage 或 DB）
+- 键盘快捷键扩展：`R` = 重听本句、`J / K` = 上 / 下句、`S` = 切 shadow、`1-4` = SRS 评分
+- **句子级"加入复习"**（不止单词），下次复习推这一整句的真音 MP3
+- 移动端：DictionaryPopover 用 `Portal` 提到 body，不再被 sticky 音频条遮挡
+
+**数据层新增**
+```sql
+CREATE TABLE sentence_progress (
+  sentence_id uuid REFERENCES sentences(id),
+  user_id uuid,                         -- 单用户先填固定值
+  repeat_count int default 0,
+  ease real default 2.5,
+  interval int default 0,
+  repetitions int default 0,
+  next_review timestamptz,
+  last_review timestamptz,
+  status text default 'new'             -- 'new' | 'learning' | 'mastered'
+);
+```
+单词 SRS 和句子 SRS **共用同一个 SM-2 引擎**（`lib/srs.ts`），Telegram 推送统一覆盖。
+
+文件改动估计：
+- `app/listen/page.tsx`（文库网格）+ `app/listen/library-grid.tsx` 新建
+- `app/listen/listen-client.tsx` 增加 shadow 模式 + 快捷键扩展
+- `lib/db/listen-progress.ts` 新建
+- `supabase/migrations/0002_sentence_progress.sql` 新建
+- 设计稿：`docs/library-progress-design.md`（已存在）
+
+---
+
+### P0-b — 词表 SRS（Goethe B1 + B2 + Edge Neural TTS）
+
+**1. 解析 Wortliste PDF（B1 + B2 都做）**
+
+B1 PDF（`scripts/Goethe-Zertifikat_B1_Wortliste.pdf`，475 KB）：
+- 文字层完整，104 页，~30 万字符
+- 第 16 页起 `2 Alphabetischer Wortschatz`，**左列词条 + 右列例句**两列布局
+- `scripts/wl-scout.ts` 已 confirm 数据可抽取
+- 写 `scripts/wl-parse-goethe.ts`：用 `pdfjs-dist` 拿每个 text item 的 `(x, y)` 坐标，按 x 切左右列、按 y 在列内聚合成块、两列按 y 对齐配对
+- 输出 `scripts/transcriptions/_wortliste-b1.json`：
+  ```json
+  [{"headword": "abbiegen", "pos": "verb", "inflection": "biegt ab, bog ab, ist abgebogen", "examples": ["An der nächsten Kreuzung müssen Sie links abbiegen."], "topic": "Verkehr"}]
+  ```
+- ~2400 条
+
+B2 PDF（`scripts/Goethe-Zertifikat_B2_Wortliste.pdf`，6.6 MB）：
+- 可能是扫描，用现成的 OCR 兜底链（`tesseract.js` 已装）走一遍
+- 解析逻辑复用同一个 column-aware parser
+- 输出 `_wortliste-b2.json`
+
+**2. Edge Neural TTS 批量生成 MP3（决定使用）**
+
+- `npm i msedge-tts`（Node 端非官方但稳定的 Edge TTS client；输出 MP3）
+- 写 `scripts/wl-tts-edge.ts`：对每个 `{headword, firstExample}` 调两次（词形 1 个 MP3、例句 1 个 MP3）
+- 声音：默认 `de-DE-KatjaNeural`（女声），可选 `de-DE-ConradNeural`（男声）
+- 输出：`public/audio/words/<sha1>.mp3`（避免空格 / 变音字符的文件名问题）
+- 2400（B1）+ ~3000（B2 估）× 2 文件 ≈ 1 万 MP3、本地一次性 batch 30-60 分钟、**0 元成本**
+- 如果文件量太大需要走 Supabase Storage，再加一步上传
+
+**3. 接入 SRS（`/review` 卡片流改造）**
+
+DB 新增字段（增量迁移）：
+```sql
+ALTER TABLE words
+  ADD COLUMN audio_word_url     text,
+  ADD COLUMN audio_example_url  text,
+  ADD COLUMN pos                text,
+  ADD COLUMN inflection         text;
+```
+
+写 `scripts/seed-wortliste.ts`：把 `_wortliste-b1.json` / `_wortliste-b2.json` 批量导入 `words` 表（`source: "wortliste-b1"` / `source: "wortliste-b2"`、`sourceRef: <topic>`、`exampleSentence: examples[0]`）。
+
+`/review` 新卡片流：
+```
+[1] 自动播放 headword.mp3
+[2] 用户脑里复述例句 / 联想词义
+[3] 按【▶ 听例句】+【👁 显示原文】
+[4] 4 级评分（再来 / 困难 / 良好 / 容易）→ SM-2 算下次时间
+```
+
+文件改动估计：
+- `scripts/wl-parse-goethe.ts` 新建（~150 LOC，column-aware）
+- `scripts/wl-tts-edge.ts` 新建（~80 LOC）
+- `scripts/seed-wortliste.ts` 新建（~60 LOC）
+- `supabase/migrations/0003_words_audio_pos.sql` 新建
+- `app/review/page.tsx`（或抽 `review-client.tsx`）：卡片流改造
+- `lib/db/words.ts`：`recordReview` 接受新字段
+
+---
+
+### P0-c — Telegram 复习提醒 bot
+
+**设计稿**：`docs/telegram-bot-design.md`（已存在）
+
+**MVP 切片**（先做单向推送，~2 小时）：
+- `scripts/tg-bot.ts`：每天 4 个固定时间点（08:00 / 12:00 / 18:00 / 21:00）
+- 查 `words` 表 + 未来的 `sentence_progress` 表里 `next_review <= now()` 的项
+- 推送格式：
+  ```
+  📚 复习时间｜abbiegen → 转弯
+  ▶️ An der nächsten Kreuzung müssen Sie links abbiegen.
+  [🎧 听音] [📖 复习]
+  ```
+- 按钮链接 `https://<your-site>/review?card=<id>`（deeplink 到该卡片）
+- `notifications_log` 表记 `(card_id, scheduled_at, sent_at)`，防重复
+- 本地用 `node-telegram-bot-api` 或 `grammy`，等流程稳定后再考虑 Vercel cron / Railway 部署
+
+**两个延后项**（P1）：
+- 双向 chat（用户回复 bot → DeepSeek 评分）
+- 主动推送：连续 7 天没打开复习 → 推送鼓励
+- 推送时机优化：根据用户「真正打开 app 的时间」自适应
+
+---
+
+### 优先级建议
+
+按 ROI：**P0-a 优先**（用户每天会用、体验提升立刻感知到），然后 P0-b（背单词闭环、可以接住 anki 用户），最后 P0-c（提醒系统在前两者数据成熟后价值最大）。
+
+但 P0-c 实际可以在 P0-a / P0-b 任何一个做完后立刻上线（~2 小时即可推送当前 4 个 demo words），所以也可以做成 P0-a 收尾后的 quick win。
+
+### 关键技术决定
+
+| 决定 | 理由 |
+|------|------|
+| TTS 用 **Microsoft Edge Neural** | 免费 + Katja/Conrad 神经语音质量很好 + Node 一行调用 + 一次性 batch 生成 MP3 + 零运行成本 |
+| Wortliste 范围：**B1 + B2 一次性做完** | 用户已在 Anki 持续背 B1，B2 早晚要做，统一 parser 一鼓作气；B2 多一天 OCR 工作量但避免分两次重写 |
+| 单词 + 句子 **共用同一个 SM-2 引擎** | `lib/srs.ts` 是唯一 SM-2 实现，不要复制；只是 `next_review` 字段从 `words` 扩到 `sentence_progress` |
+| Telegram 先做 **单向推送 MVP** | 双向 chat 是 P1；先用 2 小时换到「每天打开 Telegram 就知道该复习什么」的核心价值 |
+
+### 不做（明确放弃）
+
+- ❌ Chat 语音输入 — Sesame 已做到顶级
+- ❌ CSM 声音克隆 — 神奇但 P2 至少
+- ❌ Paste-to-learn — 不是日常驱动力
+- ❌ Chat tutor prompt 重写 — 同上
 
 ---
 
@@ -293,17 +453,18 @@ recognition.interimResults = true
 
 ---
 
-## 执行顺序
+## 执行顺序（⚠️ 旧表，已被本文档顶部"2026-05-31 夜"章节取代，保留作历史）
 
-| 顺序 | 任务 | 预估 | 说明 |
-|------|------|------|------|
-| 顺序 | 任务 | 预估 | 说明 |
-|------|------|------|------|
-| **1** | **精听跟读模式** | 2-3h | **必须优先**，逐句精听 + 播放计数 + 倒计时 + 随机鼓励 |
-| **2** | **文库 + 进度系统** | 1-2h | 27 篇文章列表、首页连击日历、进度可视化（见 `docs/library-progress-design.md`） |
-| 3 | v0.3 paste-to-learn | 1-1.5h | 完善精读链路，把教材文章加进来 |
-| 4 | Telegram Bot（设计已就绪） | — | 推送复习 + 双向对话 + 主动教学，见 `docs/telegram-bot-design.md` |
-| ⏸️ | Chat 语音输入 | 暂缓 | Sesame 做得更好，不重复造轮子 |
+| 顺序 | 任务 | 状态 |
+|------|------|------|
+| 1 | 精听跟读模式（v0.3 基础版） | ✅ 已完成（27 篇 B1 已入库，shadow UX 升级见新 P0-a） |
+| 2 | 文库 + 进度系统 | 🟡 进行中 → 新 P0-a |
+| 3 | v0.3 paste-to-learn | ⏸️ 降级（不是日常驱动力） |
+| 4 | Telegram Bot | 🔴 P0-c |
+| ⏸️ | Chat 语音输入 | ❌ 放弃（Sesame 已做更好） |
+
+新增任务：
+- 🔴 **P0-b：Goethe B1 + B2 词表 SRS（Edge TTS）** — 见顶部章节
 
 ## 架构约定（必须遵守）
 
