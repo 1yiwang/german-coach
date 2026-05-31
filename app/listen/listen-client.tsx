@@ -11,6 +11,7 @@ import {
   type LookupState,
   type WordPopover,
 } from "@/components/dictionary-popover";
+import { cn } from "@/lib/utils";
 import type { SampleSentence } from "@/lib/sample-article";
 import type {
   SentenceProgress,
@@ -129,7 +130,20 @@ export function ListenClient({
   // localStorage-backed toggle: when on, a successful rating auto-advances
   // to the next sentence after a short delay. Off by default (user keeps
   // full manual control over re-listen / lookup / analyse).
-  const [autoAdvance, setAutoAdvance] = useState(false);
+  const [autoAdvance, setAutoAdvance] = useState(() => {
+    try {
+      return (
+        typeof window !== "undefined" &&
+        window.localStorage.getItem(AUTO_ADVANCE_KEY) === "1"
+      );
+    } catch {
+      return false;
+    }
+  });
+  // S3 · lightweight BOSS fight skin. Session-only counters keep this
+  // cosmetic: no extra API calls, no schema changes, no SRS coupling.
+  const [sessionReplayCount, setSessionReplayCount] = useState(0);
+  const [sessionBossBreaks, setSessionBossBreaks] = useState(0);
 
   // <audio> element when this sentence has a real audio_url. Hung off a ref so
   // play/pause/cleanup don't trigger React re-renders.
@@ -144,6 +158,23 @@ export function ListenClient({
   const sentenceId = currentSentence?.id;
   const currentProgress = sentenceId ? progressMap[sentenceId] : undefined;
   const ratingsEnabled = Boolean(sentenceId);
+  const isBossAttack = currentProgress?.status === "learning";
+
+  const battleStats = useMemo(() => {
+    const sentenceIds = new Set(
+      sentences.map((s) => s.id).filter((id): id is string => Boolean(id)),
+    );
+    let mastered = 0;
+    let learning = 0;
+    for (const [id, progress] of Object.entries(progressMap)) {
+      if (!sentenceIds.has(id)) continue;
+      if (progress.status === "mastered") mastered++;
+      if (progress.status === "learning") learning++;
+    }
+    const hpPct =
+      sentences.length > 0 ? Math.round((mastered / sentences.length) * 100) : 0;
+    return { mastered, learning, hpPct };
+  }, [progressMap, sentences]);
 
   // SM-2 state for preview labels on the rating buttons. Mirrors the
   // pattern in app/review/page.tsx: when never-rated, start from the
@@ -179,6 +210,9 @@ export function ListenClient({
 
   // Per-sentence reset: kill any in-flight playback + collapse panels.
   useEffect(() => {
+    // This is intentionally a sentence-index synchronization effect:
+    // changing cards must stop audio and collapse transient UI.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     stopSpeaking();
     setShowText(false);
     setAnalysis(null);
@@ -188,10 +222,11 @@ export function ListenClient({
 
   // Component unmount: stop any speech.
   useEffect(() => {
+    const audio = audioRef.current;
     return () => {
       if (typeof window === "undefined") return;
       if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-      if (audioRef.current) audioRef.current.pause();
+      if (audio) audio.pause();
     };
   }, []);
 
@@ -199,17 +234,6 @@ export function ListenClient({
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = playbackRate;
   }, [playbackRate]);
-
-  // Hydrate autoAdvance from localStorage on first render.
-  useEffect(() => {
-    try {
-      if (window.localStorage.getItem(AUTO_ADVANCE_KEY) === "1") {
-        setAutoAdvance(true);
-      }
-    } catch {
-      // localStorage can throw in some sandboxed iframes; ignore.
-    }
-  }, []);
 
   // Persist autoAdvance whenever it changes.
   useEffect(() => {
@@ -225,6 +249,7 @@ export function ListenClient({
 
   const speak = useCallback(() => {
     if (!currentSentence) return;
+    setSessionReplayCount((count) => count + 1);
     // Real publisher audio takes priority over OS TTS — voice quality + natural
     // pacing are dramatically better, and `?audio_url` is what gets stored once
     // a document is imported via `scripts/import-aligned.ts`.
@@ -320,6 +345,7 @@ export function ListenClient({
           "error" in json ? json.error : `HTTP ${res.status}`,
         );
       }
+      const bossWasActive = currentProgress?.status === "learning";
       setProgressMap((prev) => ({
         ...prev,
         [sentenceId]: {
@@ -332,6 +358,9 @@ export function ListenClient({
           status: json.status,
         },
       }));
+      if (bossWasActive && (rating === "good" || rating === "easy")) {
+        setSessionBossBreaks((count) => count + 1);
+      }
       toast.success(
         `Gespeichert · nächste Wiederholung in ${formatIntervalDays(json.interval)}`,
         {
@@ -490,24 +519,81 @@ export function ListenClient({
         </div>
       </header>
 
-      {/* Progress strip */}
-      <div className="space-y-1">
-        <div className="flex justify-between text-xs text-muted-foreground font-mono">
-          <span>
-            Satz {currentIndex + 1} / {sentences.length}
-          </span>
-          <span>{progressPct}%</span>
+      {/* S3: lightweight BOSS fight header. Cosmetic only; all counters come
+          from current SRS state + this browser session. */}
+      <div
+        className={cn(
+          "rounded-xl border bg-card p-4 shadow-sm transition-colors",
+          isBossAttack
+            ? "border-destructive/50 bg-destructive/5 shadow-destructive/10"
+            : "border-border",
+        )}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold">⚔️ BOSS-Kampf</span>
+              {isBossAttack && (
+                <Badge variant="destructive" className="text-[10px]">
+                  ⚡ Spezialangriff
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Satz {currentIndex + 1}/{sentences.length} · Route {progressPct}%
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-center text-xs max-[480px]:w-full">
+            <div className="rounded-lg bg-muted px-2 py-1.5">
+              <div className="font-mono font-semibold">
+                {battleStats.mastered}/{sentences.length}
+              </div>
+              <div className="text-[10px] text-muted-foreground">besiegt</div>
+            </div>
+            <div className="rounded-lg bg-muted px-2 py-1.5">
+              <div className="font-mono font-semibold">
+                {sessionReplayCount}
+              </div>
+              <div className="text-[10px] text-muted-foreground">replays</div>
+            </div>
+            <div className="rounded-lg bg-muted px-2 py-1.5">
+              <div className="font-mono font-semibold">
+                {sessionBossBreaks}
+              </div>
+              <div className="text-[10px] text-muted-foreground">breaks</div>
+            </div>
+          </div>
         </div>
-        <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-          <div
-            className="h-full bg-foreground transition-all"
-            style={{ width: `${progressPct}%` }}
-          />
+        <div className="mt-3 space-y-1">
+          <div className="flex justify-between text-xs text-muted-foreground font-mono">
+            <span>HP</span>
+            <span>{battleStats.hpPct}%</span>
+          </div>
+          <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all",
+                battleStats.hpPct >= 100 ? "bg-emerald-500" : "bg-sky-500",
+              )}
+              style={{ width: `${battleStats.hpPct}%` }}
+            />
+          </div>
         </div>
+        {isBossAttack && (
+          <p className="mt-3 text-xs text-destructive">
+            ⚡ BOSS setzt einen schwierigen Satz ein. Wenn du ihn jetzt mit
+            „Gut“ oder „Einfach“ bewertest, zählt das als Break.
+          </p>
+        )}
       </div>
 
       {/* Main sentence card */}
-      <Card>
+      <Card
+        className={cn(
+          isBossAttack &&
+            "border-destructive/40 bg-destructive/5 shadow-sm shadow-destructive/10",
+        )}
+      >
         <CardContent className="space-y-4">
           {/* Hidden / shown state */}
           <div className="min-h-[88px] flex flex-col justify-center">
