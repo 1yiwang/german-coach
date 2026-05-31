@@ -13,6 +13,10 @@ import {
   listDocuments,
   getDocumentWithSentences,
 } from "@/lib/db/documents";
+import {
+  listProgressForDocument,
+  type SentenceProgress,
+} from "@/lib/db/listen-progress";
 import { ListenClient } from "./listen-client";
 
 // Server Component talks to Supabase per request; never prerender.
@@ -69,6 +73,7 @@ export default async function ListenPage({ searchParams }: ListenPageProps) {
   }
 
   const sentences: SampleSentence[] = result.sentences.map((s) => ({
+    id: s.id,
     index: s.index,
     original: s.original,
     translationHint: s.translation,
@@ -86,6 +91,16 @@ export default async function ListenPage({ searchParams }: ListenPageProps) {
     );
   }
 
+  // Per-sentence SRS state. Swallow errors — a missing sentence_progress
+  // table (e.g. user hasn't applied 0002_sentence_progress.sql yet) should
+  // degrade gracefully to "no prior ratings" rather than 500 the page.
+  let initialProgress: SentenceProgress[] = [];
+  try {
+    initialProgress = await listProgressForDocument(result.doc.id);
+  } catch (err) {
+    console.warn("listProgressForDocument failed:", err);
+  }
+
   return (
     <ListenClient
       docId={result.doc.id}
@@ -93,6 +108,7 @@ export default async function ListenPage({ searchParams }: ListenPageProps) {
       level={result.doc.level}
       source={result.doc.source}
       sentences={sentences}
+      initialProgress={initialProgress}
     />
   );
 }

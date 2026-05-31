@@ -6,6 +6,13 @@
  */
 
 export interface SampleSentence {
+  /**
+   * Supabase `sentences.id` (uuid). Present for real DB-backed sentences;
+   * absent for the hard-coded demo article — the /listen rating buttons
+   * gate themselves on this field so demo sentences show a disabled-state
+   * hint instead of writing nowhere.
+   */
+  id?: string;
   index: number;
   original: string;
   translationHint?: string;

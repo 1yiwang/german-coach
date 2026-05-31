@@ -160,7 +160,7 @@ ALTER TABLE words
 
 - ❌ Chat 语音输入 — Sesame 已做到顶级
 - ❌ CSM 声音克隆 — 神奇但 P2 至少
-- ❌ Paste-to-learn — 不是日常驱动力
+- ⏸️ Paste-to-learn — 延后，不是完全不做
 - ❌ Chat tutor prompt 重写 — 同上
 
 ---
@@ -210,20 +210,58 @@ german-coach/
 
 ---
 
-## 任务 1：🔴 P0 精听跟读模式（Intensive Listening）
+## 🗂️ 执行计划（Cursor 按顺序执行，每个 Step 做完再下一个）
 
-### 用户故事
+---
 
-用户打开 /listen → 看到一篇文章的句子列表 → 点一个句子 → TTS 播放德语 → 原文隐藏 → 用户尝试复述/跟读 → 实在听不出来可以显示原文 → 点击 DeepSeek 分析 → 点击加入复习队列。
+### Step 1：句子评级 + SM-2 连通
 
-### 文件清单
+**Goal：** 精听页面每句结束后，用户点评级按钮 → 写入 sentence_progress → 自动进 SRS 复习队列。
 
-**新建：**
-1. `app/listen/page.tsx` — 主页面（Server Component 外壳）
-2. `app/listen/listen-client.tsx` — 交互组件（useState + 所有逻辑）
-3. `app/api/listen/analyze/route.ts` — DeepSeek 分析单句（可选，复用 /api/analyze 也行）
+**文件清单：**
+- `supabase/migrations/0002_sentence_progress.sql` **新建**
+- `lib/db/listen-progress.ts` **新建**
+- `app/listen/listen-client.tsx` **修改**（增加评级 UI）
 
-### 数据流
+**DB 迁移：**
+```sql
+CREATE TABLE sentence_progress (
+  sentence_id uuid REFERENCES sentences(id),
+  user_id uuid DEFAULT '00000000-0000-0000-0000-000000000001',
+  repeat_count int default 0,
+  ease real default 2.5,
+  interval int default 0,
+  repetitions int default 0,
+  next_review timestamptz,
+  last_review timestamptz,
+  status text default 'new'
+);
+```
+
+**评级按钮（UI）：**
+```
+句子播放完毕 → 显示原文后 → 出现：
+  ┌────────┐  ┌────────┐  ┌────────┐
+  │ 🔄 再来│  │ 😓 困难│  │ ✅ 良好│
+  └────────┘  └────────┘  └────────┘
+```
+
+**SM-2 映射（复用 lib/srs.ts 的 calculateReview）：**
+
+| 按钮 | SM-2 grade | ease 调整 | interval 初始 | status |
+|------|-----------|-----------|--------------|--------|
+| 🔄 再来 | 1 | ease × 1.5（下降）| 0（今天晚点） | 'learning' |
+| 😓 困难 | 2 | ease 不变 | 1 天 | 'learning' |
+| ✅ 良好 | 4 | ease 不变 | 3 天 | 'mastered' |
+
+**Milestone ✅：**
+- [ ] DB migration 可运行
+- [ ] 精听页面每句结束后显示三个评级按钮
+- [ ] 点击任意按钮 → 写入 sentence_progress 表
+- [ ] 写入后按钮变灰 + sonner toast "已记录"
+- [ ] lib/srs.ts 未被修改
+
+### 数据流（已有精听模式保持不变）
 
 ```
 1. page.tsx: 从 Supabase 读取文章列表（SELECT * FROM documents）
@@ -349,124 +387,470 @@ const speak = (text: string) => {
 
 ---
 
-## 任务 2：🔴 P0 v0.3 paste-to-learn 收尾
+### Step 2：文库网格
 
-### 现状
+**Goal：** 27 篇文章以卡片网格展示，每张显示进度环、上次学习时间、状态标签。
 
-3 个 API 路由已写好：`POST /api/documents/create`、`GET /api/documents`、`GET /api/documents/[id]`。
-`app/learn/page.tsx` 之前拆分到一半被中断，`git checkout HEAD` 恢复到了可工作状态。
+**文件清单：**
+- `app/listen/page.tsx` **重写**
+- `app/listen/library-grid.tsx` **新建**
+- 复用 `GET /api/documents` 拿文章列表
+- 从 `sentence_progress` 按 document_id 聚合统计进度
 
-### 需要做的事
-
-#### (a) 拆分 app/learn/page.tsx
-
-**app/learn/page.tsx** → 变成 Server Component：
-
-```tsx
-// 读取 searchParams.id
-// 有 id → fetch(`/api/documents/${id}`) 拿文档数据
-// 无 id → import { sampleArticle } from "@/lib/sample-article"
-// 把句子列表传给 LearnClient
+**卡片设计：**
+```
+┌──────────────────────┐
+│  📘 Lektion 3        │
+│  "Im Restaurant"     │
+│                      │
+│      ╭─────╮         │
+│      │ 8/20│  ← 进度环│
+│      ╰─────╯         │
+│  🕐 上次: 昨天       │
+│  🔵 进行中            │
+└──────────────────────┘
 ```
 
-**app/learn/learn-client.tsx** → 新建，从原 page.tsx 搬过来：
+**顶部 tab 筛选：** 全部 / 进行中 / 待复习 / 已掌握
 
-搬以下内容：
-- 所有 `useState` / `useEffect` 调用
-- 所有事件处理函数（onAnalyze, onPractice, onLookup 等）
-- DictionaryPopover 的内联实现
-- sonner toast 调用
-- session-level dedup set
+**点击文章 →** `/listen?id=xxx`（进入精听）
 
-不要搬：
-- 直接读取 DB 的逻辑（留在 server component）
-- `force-dynamic` 导出
-
-#### (b) 添加「+ 粘贴新文本」按钮
-
-- 在 learn page 的 header 区域添加一个按钮
-- 点击弹出 Dialog（shadcn Dialog 组件）
-- Dialog 内容：标题输入框 + 文本域（textarea）+ "德语"级别选择（A1/A2/B1/B2）
-- 提交 → `POST /api/documents/create` → `router.push("/learn?id=" + newId)`
-
-#### (c) Supabase 字段映射
-
-`sentences` 表的 `grammar` 字段 → 在前端映射为 `SampleSentence.grammarTag`
-`sentences` 表的 `translation` 字段 → 在前端映射为 `SampleSentence.translationHint`
-在 fetch 边界做转换，不改 DB 结构。
-
-### 成功标准
-
-- [ ] 用户能粘贴文本生成新文章
-- [ ] 新文章可在 learn 页面学习（解析/练习/TTS/查词）
-- [ ] 旧文章（seed 数据）仍然可学
-- [ ] 所有交互功能正常运行
+**Milestone ✅：**
+- [ ] 打开 /listen 显示 27 张文章卡片
+- [ ] 每张卡片显示正确的进度环（来自 sentence_progress）
+- [ ] 顶部 tab 筛选正常工作
+- [ ] 点击卡片进入精听模式
+- [ ] 移动端 480px 断点正常
 
 ---
 
-## 任务 3：🟡 P1 Chat + 语音输入
+### Step 3：Shadow 模式 + 快捷键
 
-### 现状
+**Goal：** 精听体验升级——原文默认隐藏 + 自动停顿 + 键盘快捷键。
 
-Chat 页面已有流式对话功能。用户打字 → DeepSeek 流式返回。现在要加麦克风输入。
-
-### 需要做的事
-
-在 `app/chat/page.tsx` 的输入框旁边添加 🎤 按钮。
-
-**语音识别逻辑：**
-
-```tsx
-// 检查浏览器是否支持 SpeechRecognition
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-if (!SpeechRecognition) { /* 显示不支持提示，隐藏麦克风按钮 */ }
-
-const recognition = new SpeechRecognition()
-recognition.lang = "de-DE"
-recognition.continuous = false
-recognition.interimResults = true
+**Shadow 模式流程：**
+```
+1. 进入句子 → 原文隐藏
+2. 自动播放 TTS（rate=0.8）
+3. 播放完后停顿 3 秒（让你默默复述）
+4. 自动显示原文
+5. 出现评级按钮
 ```
 
-**用户流程：**
+**快捷键：**
 
-```
-点击 🎤 → 开始录音 → 你说德语
-  → 实时显示转写文本（灰色，不断更新）
-  → 再次点击 🎤 → 停止录音
-  → 转写结果出现在输入框（可编辑）
-  → 不满意 → 点击 🎤 重录
-  → 满意 → Enter 发送 → DeepSeek 回复 + 语法纠正
-```
+| 键 | 功能 |
+|----|------|
+| R | 重听本句 |
+| J | 上一句 |
+| K | 下一句 |
+| S | 切换 Shadow 模式 on/off |
+| 1 / 2 / 3 | 评级：再来 / 困难 / 良好 |
 
-**UI 改动：**
-- 输入框左边加一个 🎤 麦克风按钮
-- 录音时按钮变红 + 脉冲动画
-- 录音中转写文本显示在输入框（interim + final）
-- 停止后文本固定在输入框，用户可编辑
-
-### 成功标准
-
-- [ ] 麦克风按钮在 Chrome/Edge 可见可用
-- [ ] 录音→转写→可编辑→发送 完整链路
-- [ ] 不支持语音识别的浏览器优雅降级（隐藏按钮）
-- [ ] 不破坏现有打字聊天功能
+**Milestone ✅：**
+- [ ] Shadow 模式 toggle 正常工作
+- [ ] 自动停顿 3 秒后显示原文
+- [ ] 5 个快捷键都可用
+- [ ] 快捷键不与浏览器默认行为冲突
 
 ---
 
-## 执行顺序（⚠️ 旧表，已被本文档顶部"2026-05-31 夜"章节取代，保留作历史）
+### Step 4：Goethe Wortliste 解析（P0-b）
 
-| 顺序 | 任务 | 状态 |
-|------|------|------|
-| 1 | 精听跟读模式（v0.3 基础版） | ✅ 已完成（27 篇 B1 已入库，shadow UX 升级见新 P0-a） |
-| 2 | 文库 + 进度系统 | 🟡 进行中 → 新 P0-a |
-| 3 | v0.3 paste-to-learn | ⏸️ 降级（不是日常驱动力） |
-| 4 | Telegram Bot | 🔴 P0-c |
-| ⏸️ | Chat 语音输入 | ❌ 放弃（Sesame 已做更好） |
+**Goal：** 解析 Goethe B1/B2 官方词汇表 PDF，提取 ~5400 条词条 + 例句。
 
-新增任务：
-- 🔴 **P0-b：Goethe B1 + B2 词表 SRS（Edge TTS）** — 见顶部章节
+**文件清单：**
+- `scripts/wl-parse-goethe.ts` **新建**
+- `scripts/transcriptions/_wortliste-b1.json` **输出**
+- `scripts/transcriptions/_wortliste-b2.json` **输出**
+- B1 PDF 已放 `scripts/Goethe-Zertifikat_B1_Wortliste.pdf`
+- B2 PDF 已放 `scripts/Goethe-Zertifikat_B2_Wortliste.pdf`
 
-## 架构约定（必须遵守）
+**方法：** `pdfjs-dist` 读坐标 → 按 x 切左右列 → 配对词条 + 例句
+
+**输出格式：**
+```json
+{"headword": "abbiegen", "pos": "verb", "inflection": "biegt ab, bog ab, ist abgebogen", "examples": ["An der nächsten Kreuzung müssen Sie links abbiegen."], "topic": "Verkehr"}
+```
+
+**Milestone ✅：**
+- [ ] B1 PDF 解析完成，输出 ~2400 条
+- [ ] 每条有 headword + examples
+- [ ] B2 PDF 解析完成（文字层有问题则用 tesseract.js OCR 兜底）
+- [ ] JSON 格式正确，可直接导入
+
+---
+
+### Step 5：Edge TTS 批量生成 MP3
+
+**Goal：** Microsoft Edge Neural TTS 免费生成词条 + 例句 MP3。
+
+**文件清单：**
+- `scripts/wl-tts-edge.ts` **新建**
+- `scripts/seed-wortliste.ts` **新建**
+- `supabase/migrations/0003_words_audio_pos.sql` **新建**
+
+**DB 迁移：**
+```sql
+ALTER TABLE words
+  ADD COLUMN audio_word_url     text,
+  ADD COLUMN audio_example_url  text,
+  ADD COLUMN pos                text,
+  ADD COLUMN inflection         text;
+```
+
+**TTS：** `npm i msedge-tts` → `de-DE-KatjaNeural` 女声 → 每个 headword + 第一个 example 分别生成 MP3 → 存 `public/audio/words/<sha1>.mp3`
+
+**/review 新卡片流：**
+```
+[1] 自动播放 headword.mp3
+[2] 用户脑里复述例句 / 联想词义
+[3] 按【▶ 听例句】+【👁 显示原文】
+[4] 4 级评分（再来 / 困难 / 良好 / 容易）→ SM-2
+```
+
+**Milestone ✅：**
+- [ ] B1 词条 MP3 全部生成完毕
+- [ ] 导入 words 表（source='wortliste-b1'）
+- [ ] /review 新卡片流：自动播放 → 听例句 → 4 级评分
+- [ ] 音频播放无卡顿
+
+---
+
+### Step 6：Telegram 推送 MVP（P0-c）
+
+**Goal：** 每天 08:00 / 12:00 / 18:00 / 21:00 推送到期卡片到 Telegram。
+
+**文件清单：**
+- `scripts/tg-bot.ts` **新建**
+- `notifications_log` 表 **新建**
+- 依赖：`npm i node-telegram-bot-api`
+
+**推送格式：**
+```
+📚 复习时间｜abbiegen → 转弯
+▶️ An der nächsten Kreuzung müssen Sie links abbiegen.
+[🎧 听音] [📖 复习]
+```
+按钮 deeplink → `https://<your-site>/review?card=<id>`
+
+**防重复：** `notifications_log` 表记录 `(card_id, scheduled_at, sent_at)`，同张卡片同轮不重复推。
+
+**Milestone ✅：**
+- [ ] 首次启动 /start 回复 "Hey Yi! Endlich bin ich da."
+- [ ] 定时推送到期卡片（同时覆盖 sentence_progress 和 words）
+- [ ] 卡片链接可点击跳转到 /review
+- [ ] 不重复推送同一张卡片
+
+---
+
+## 执行顺序总表
+
+| 顺序 | Step | 预估 | Cursor Session |
+|------|------|------|----------------|
+| 1️⃣ | 句子评级 + SM-2 连通 | 1-1.5h | 第 1 个 session |
+| 2️⃣ | 文库网格 | 1h | 第 1 个 session（做完 Step 1 继续）|
+| 3️⃣ | Shadow 模式 + 快捷键 | 1h | 第 2 个 session |
+| 4️⃣ | Goethe Wortliste 解析 | 2-3h | 第 2-3 个 session |
+| 5️⃣ | Edge TTS 批量 MP3 | 1h | 第 3 个 session |
+| 6️⃣ | Telegram 推送 MVP | 2h | 第 4 个 session |
+
+---
+
+## 🎮 游戏化皮肤 · 库洛洛设计（2026-05-31 新增）
+
+### 设计理念
+
+**不做重游戏**（没有 XP 升级、没有天赋树、没有排行榜），只做 **视觉换皮 + 数据可视化**。让现有的 SRS 进度数据显示得更有趣。
+
+```
+三层结构：
+╔════════════════════════════════════════╗
+║  📊 首页 Dashboard                     ║
+║     GitHub 热力图 · 里程碑 · 连击日历    ║
+║     → "我的付出每一天都被看见了"         ║
+╠════════════════════════════════════════╣
+║  🏰 文库 = 世界地图                     ║
+║     每篇文章 = 一个 BOSS 关卡            ║
+║     BOSS 血条 = 进度条                  ║
+║     BOSS 大招 = 你之前标记"困难"的句子    ║
+╠════════════════════════════════════════╣
+║  ⚔️ 精听 = BOSS 战                     ║
+║     实时数据：HP 变动 · 破招计数         ║
+║     结算页：战斗报告 + 徽章              ║
+╚════════════════════════════════════════╝
+```
+
+### 1. 📊 首页：GitHub 热力图
+
+在首页（`/` 或 `/dashboard`）新增一个贡献热力图：
+
+```
+📊 学习热力图 — 今天还没学？🔥
+
+  3月        4月        5月
+  ┌─────────────────────────────┐
+  │  ⬜⬜🟩🟩🟩⬜⬜  │ 第 1 周
+  │  🟩🟩🟩🟩⬜🟩🟩  │ 第 2 周
+  │  🟩⬜🟩🟩🟩⬜🟩  │ 第 3 周
+  │  🟩🟩🟩🟩🟩🟩⬜  │ 第 4 周 ← 昨天断了一天…
+  │                     今天：🟩🟩⬜⬜⬜⬜⬜
+  └─────────────────────────────┘
+
+  最长连击：14 天（2026-05-18 ~ 2026-05-31）
+  本月总句数：247 句
+```
+
+**颜色规则（effort 分值）：**
+
+| 颜色 | 含义 | 当日得分 |
+|------|------|---------|
+| ⬜ 灰色 | 没学 | 0 |
+| 🟩 浅绿 | 摸了一点 | 1-5 |
+| 🟩 中绿 | 正常学习 | 6-15 |
+| 🟩 深绿 | 用功了 | 16-25 |
+| 🟩 最深 | 今天学炸了 | 25+ |
+
+**effort 分值计算（复合分）：**
+
+| 行为 | 分值 |
+|------|------|
+| 学了 1 句 | +1 |
+| 首次打开 App | +2 |
+| 复习了"困难"句子 | 每句 +2（比学新句更有价值） |
+| 完成一整篇文章 | +5 |
+| 标记"良好"的句子 | 每句 +1 |
+
+**数据来源：** 需新增 `study_log` 表，每天一条：
+
+```sql
+CREATE TABLE study_log (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid DEFAULT '00000000-0000-0000-0000-000000000001',
+  log_date date NOT NULL DEFAULT CURRENT_DATE,
+  effort_score int NOT NULL DEFAULT 0,
+  sentences_studied int NOT NULL DEFAULT 0,
+  sentences_mastered int NOT NULL DEFAULT 0,
+  articles_completed int NOT NULL DEFAULT 0,
+  created_at timestamptz DEFAULT now(),
+  UNIQUE(user_id, log_date)
+);
+```
+
+**提示：** 断了一天不要惩罚，只显示灰色。不是"断了就完了"，而是"断了也没事，明天补上"。
+
+---
+
+### 2. 🏰 文库 = BOSS 世界地图
+
+文库页面（`/listen` 列表）改造为"关卡地图"风格：
+
+```
+📚 27 篇 B1 · 世界地图 🔥 7 天连击
+
+  🎉 🏰 Lektion 1 "Hallo!"        ✅ 已征服
+  🎉 🏰 Lektion 2 "Familie"       ✅ 已征服
+  ⚔️ 🏰 Lektion 3 "Restaurant"    ◀ 战斗中
+        ████████░░░░░░░░░░ 8/20 HP
+        ⚡ BOSS 技能：「Die Tatsache, dass...」
+  🏚️ 🏰 Lektion 4 "Einkaufen"    ❓ 未探索
+  🏚️ 🏰 Lektion 5 "Wohnung"     ❓ 未探索
+  ...
+```
+
+**状态映射：**
+
+| 游戏状态 | 实际含义 | Emoji | 卡面色 |
+|---------|---------|-------|--------|
+| 🎉 已征服 | 文章所有句 status=mastered | 🎉 | 绿色 |
+| ⚔️ 战斗中 | status=learning 的句子 | ⚔️ | 蓝色 |
+| 🏚️ 未探索 | 还没打开过 | 🏚️ | 灰色 |
+| 🔒 锁定 |（可选）完成上一篇才解锁 | 🔒 | 灰+锁 |
+
+**BOSS 技能显示规则：** 从 `sentence_progress` 读该文章里 `play_count` 最高或标记 "learning" 次数最多的句子，显示一句作为"BOSS 的神技"。
+
+---
+
+### 3. ⚔️ 精听页面 = BOSS 战
+
+进入文章就是进入 BOSS 战。**纯 CSS 换皮肤，不改功能逻辑：**
+
+```
+┌──────────────────────────────────┐
+│ ⚔️ Lektion 3                     │
+│ HP ████████░░░░░░ 8/20           │
+│                        🔥 7 天连击 │
+│                                  │
+│ 第 9/20 句                       │
+│ ┌───────────────────────────┐    │
+│ │  🔊 [播放]  🔄 [重播]     │    │
+│ │  [👁️ 显示原文]            │    │
+│ │                            │    │
+│ │  ⚔️ 本场战斗               │    │
+│ │  已击败: 8 句              │    │
+│ │  重听: 12 次               │    │
+│ │  破解大招: 2 次 💥         │    │
+│ └───────────────────────────┘    │
+│                                  │
+│  ── ⚡ BOSS 的特殊攻击 ───────── │
+│  「Die Tatsache, dass...」       │
+│  （你之前在这句花了 6 遍！）      │
+│      这次能一次过吗？            │
+│                                  │
+│ [🔴 再来一次] [😓 困难] [✅ 良好] │
+└──────────────────────────────────┘
+```
+
+**BOSS 特殊攻击：** 之前标记过"困难"或播放 6+ 次的句子 → 进入时这句底色闪一下红色，边框发光，文案显示 "⚡ BOSS 放大招了！"。你如果这次一次过了 → 特别爽，因为 "你破解了 BOSS 的招式"。
+
+**实时战斗数据（右侧/下方）：**
+- 已击败句数（就是 currentIndex）
+- 重听次数（累加当前会话的播放次数）
+- 破解大招次数（标记困难的句子一次过的次数）
+- 当前连击（来自 study_log）
+
+**不需要新数据表，数据来源：**
+- HP = 当前句数 / 总句数
+- BOSS 大招 = `sentence_progress.play_count` + `status`
+- 重听次数 = 会话内累加（前端 state 就行）
+
+---
+
+### 4. 🎉 文章完成结算页
+
+每篇文章所有句子过完后 → 弹出结算页：
+
+```
+🎉  Lektion 3 "Im Restaurant" besiegt!  🎉
+
+╔══════════════════════════════════════╗
+║  ⚔️ 战斗报告                         ║
+║                                      ║
+║  20 句全部通关 ✅                    ║
+║  耗时：3 天（3 场战斗）              ║
+║  总重听次数：47 次                    ║
+║  破解 BOSS 大招：5 次 💥             ║
+║                                      ║
+║  🔥 最难句子 Top 3：                  ║
+║    1. "Die Tatsache, dass..." 11 次  ║
+║    2. "bestellen" 8 次               ║
+║    3. "obwohl" 7 次                  ║
+║                                      ║
+║  对比第一轮：你的重听次数            ║
+║  从平均每句 4.2 次 → 2.1 次 📉        ║
+║                                      ║
+║  🏆 解锁徽章：「Im Restaurant 征服者」 ║
+║  📊 总体进度：3/27 篇 · 11%          ║
+║                                      ║
+║       [⏩ 下一篇：Lektion 4]          ║
+╚══════════════════════════════════════╝
+```
+
+**徽章列表（硬编码，每篇独立）：**
+
+| 徽章 | 条件 |
+|------|------|
+| 🏆 Lektion N 征服者 | 该文章所有句子 mastered |
+| 💥 破招达人 | 一篇文章里 5+ 次"特殊攻击"一次过 |
+| 🔥 连击王 | 连击 7 天 |
+| 🐢 但行好事 | 标记"再来一次"后 24h 内复习了 |
+| 🏆 27 篇全通 | 所有文章 mastered（终极大奖） |
+
+**徽章存在哪里：** 新增 `badges` 表或直接存在 `study_log` / 用户元数据里，不做复杂成就系统。
+
+```sql
+CREATE TABLE user_badges (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid DEFAULT '00000000-0000-0000-0000-000000000001',
+  badge_key text NOT NULL,         -- 'conqueror_3', 'combo_7', 'all_27'
+  unlocked_at timestamptz DEFAULT now(),
+  UNIQUE(user_id, badge_key)
+);
+```
+
+---
+
+### 5. 📈 独立统计页面
+
+导航新增入口 "📊 统计"，打开后展示全局数据：
+
+```
+📊 德语学习统计
+
+🔥 连击
+   ┌─────────────────────────────┐
+   │ 一 二 三 四 五 六 日         │
+   │ 8  12 5  0  15 10 7   ← 句数 │
+   │ ✅ ✅ ✅ ❌ ✅ ✅ ✅  ← 当天  │
+   │         ↑ 昨天断了 😢       │
+   └─────────────────────────────┘
+   最长连击：14 天（2026-05-18 ~ 2026-05-31）
+
+📚 文库总览
+   27 篇中：3 篇 ✅ · 1 篇 ⚔️ · 23 篇 🏚️
+   总句数：120/540 句（22%）
+
+📈 本周趋势（折线图或柱状简图）
+   周一  周二  周三  周四  周五  周六  周日
+   12句   8句   15句   —    5句    10句   7句
+                         ↑ 休息日          ↑ 今天
+
+🎨 热力图（同上第 1 节）
+
+🏅 徽章墙
+   🏆 征服者 · Lektion 1  ✅
+   🏆 征服者 · Lektion 2  ✅
+   🏆 征服者 · Lektion 3  ✅  2026-05-31
+   💥 破招达人                 🔒 再 2 篇
+   🔥 连击王                   🔒 再 7 天
+   🏆 27 篇全通               🔒 再 24 篇
+
+🎯 下一步里程碑
+   □ 第 1 篇文章完成  → ✅ 2026-05-29
+   □ 第 5 篇文章完成  → 🔒 再 2 篇
+   □ 连击 30 天       → 🔒 再 23 天
+   □ 全部 27 篇完成   → 🔒 再 24 篇
+```
+
+---
+
+### 6. 实现建议
+
+**最小可行（跟 Step 1-3 一起做）：**
+
+| 优先级 | 功能 | 工作量 | 建议在 Step |
+|--------|------|--------|------------|
+| 🔴 P0 | 热力图 + `study_log` 表 | ~2h | **Step 1 之后单独做，或 Step 2 顺便** |
+| 🔴 P0 | 文库 BOSS 皮肤（血条 + emoji 状态）| ~1h | **Step 2 文库网格时一起做** |
+| 🔴 P0 | 战斗实时数据（已击败/重听/破招）| ~0.5h | **Step 1 句子评级做完后** |
+| 🟡 P1 | 结算页（战斗报告 + 对比）| ~2h | Step 3 之后 |
+| 🟡 P1 | BOSS 特殊攻击特效 | ~1h | Step 3 之后 |
+| 🟢 P2 | 徽章系统 + `user_badges` 表 | ~1.5h | 所有 Step 完成后 | 
+| 🟢 P2 | 独立统计页面 | ~2h | 所有 Step 完成后 |
+
+**核心原则：** 不修改 SRS 算法、不新增 API 路由、纯前端 + 一张 `study_log` 表 + 一张 `user_badges` 表。游戏化 = 皮肤，不是功能。
+
+---
+
+### 7. 数据流
+
+```
+句子评级（Step 1） → sentence_progress 表更新
+                        ↓
+                    study_log 表 → 每天汇总结 effort_score
+                        ↓
+                    文库 BOSS 血条 ← 读 sentence_progress 按 document_id 聚合
+                    精听战斗数据  ← 前端 state 实时累加
+                    结算页        ← 读 sentence_progress 全量统计
+                    热力图        ← 读 study_log 里近 365 天
+                    徽章系统      ← 读 user_badges + sentence_progress 条件检查
+```
+
+**唯一新增的表：** `study_log`（热力图 + 连击）+ `user_badges`（徽章）
+
+---
+
+## 架构约定（Cursor 必须遵守）
 
 | 约定 | 说明 |
 |------|------|

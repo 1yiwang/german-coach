@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,71 @@ import {
   type WordPopover,
 } from "@/components/dictionary-popover";
 import type { SampleSentence } from "@/lib/sample-article";
+import type {
+  SentenceProgress,
+  SentenceStatus,
+} from "@/lib/db/listen-progress";
+import {
+  initialSrsState,
+  intervalLabel,
+  type ReviewRating,
+  type SrsState,
+} from "@/lib/srs";
+
+const AUTO_ADVANCE_KEY = "german-coach.listen.autoAdvance";
+
+const RATING_BUTTONS: {
+  rating: ReviewRating;
+  label: string;
+  hint: string;
+  className: string;
+}[] = [
+  {
+    rating: "again",
+    label: "Nochmal",
+    hint: "Nicht verstanden",
+    className:
+      "border-destructive/30 text-destructive hover:bg-destructive/10",
+  },
+  {
+    rating: "hard",
+    label: "Schwer",
+    hint: "Mit Mühe verstanden",
+    className:
+      "border-amber-500/30 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/40",
+  },
+  {
+    rating: "good",
+    label: "Gut",
+    hint: "Verstanden, kann wiederholen",
+    className:
+      "border-emerald-500/30 text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950/40",
+  },
+  {
+    rating: "easy",
+    label: "Einfach",
+    hint: "Sofort verstanden",
+    className:
+      "border-sky-500/30 text-sky-700 hover:bg-sky-50 dark:text-sky-300 dark:hover:bg-sky-950/40",
+  },
+];
+
+const STATUS_BADGE: Record<SentenceStatus, { label: string; emoji: string }> =
+  {
+    new: { label: "Neu", emoji: "🌱" },
+    learning: { label: "Am Lernen", emoji: "🔄" },
+    mastered: { label: "Gemeistert", emoji: "✅" },
+    skipped: { label: "Übersprungen", emoji: "🚫" },
+  };
+
+function formatIntervalDays(days: number): string {
+  if (days < 1) return "<1 Tag";
+  if (days >= 30) {
+    const months = Math.floor(days / 30);
+    return `${months} ${months === 1 ? "Monat" : "Monate"}`;
+  }
+  return `${days} ${days === 1 ? "Tag" : "Tage"}`;
+}
 
 interface ListenClientProps {
   docId: string;
@@ -19,6 +84,9 @@ interface ListenClientProps {
   level?: string;
   source?: string;
   sentences: SampleSentence[];
+  /** Per-sentence SRS state preloaded by the Server Component. Demo
+   *  article passes []; absence is treated as "never rated". */
+  initialProgress?: SentenceProgress[];
 }
 
 export function ListenClient({
@@ -27,6 +95,7 @@ export function ListenClient({
   level,
   source,
   sentences,
+  initialProgress = [],
 }: ListenClientProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showText, setShowText] = useState(false);
@@ -40,6 +109,27 @@ export function ListenClient({
   // Speed control applies to BOTH real audio (HTMLAudioElement.playbackRate)
   // and TTS (SpeechSynthesisUtterance.rate). 1.0 is natural, 0.75 is study pace.
   const [playbackRate, setPlaybackRate] = useState(1.0);
+  // Per-sentence SRS state, seeded from server and updated in place when
+  // the user grades a sentence. Key = Supabase sentence.id (uuid).
+  const [progressMap, setProgressMap] = useState<
+    Record<string, SentenceProgress>
+  >(() => {
+    const m: Record<string, SentenceProgress> = {};
+    for (const p of initialProgress) m[p.sentenceId] = p;
+    return m;
+  });
+  // Rating button being submitted; disables all four while in-flight.
+  const [submittingRating, setSubmittingRating] = useState<ReviewRating | null>(
+    null,
+  );
+  // Skip toggle in-flight flag — separate from submittingRating so the
+  // two never block each other (and so the toggle can show a dimmed
+  // state during its own roundtrip).
+  const [submittingSkip, setSubmittingSkip] = useState(false);
+  // localStorage-backed toggle: when on, a successful rating auto-advances
+  // to the next sentence after a short delay. Off by default (user keeps
+  // full manual control over re-listen / lookup / analyse).
+  const [autoAdvance, setAutoAdvance] = useState(false);
 
   // <audio> element when this sentence has a real audio_url. Hung off a ref so
   // play/pause/cleanup don't trigger React re-renders.
@@ -51,6 +141,31 @@ export function ListenClient({
   const ttsAvailable =
     typeof window !== "undefined" && "speechSynthesis" in window;
   const hasRealAudio = Boolean(currentSentence?.audioUrl);
+  const sentenceId = currentSentence?.id;
+  const currentProgress = sentenceId ? progressMap[sentenceId] : undefined;
+  const ratingsEnabled = Boolean(sentenceId);
+
+  // SM-2 state for preview labels on the rating buttons. Mirrors the
+  // pattern in app/review/page.tsx: when never-rated, start from the
+  // canonical initial state so users see "<1 day" / "1 day" / "4 days"
+  // on the first grade.
+  const currentSrsState = useMemo<SrsState>(() => {
+    if (!currentProgress) return initialSrsState();
+    return {
+      ease: currentProgress.ease,
+      interval: currentProgress.interval,
+      repetitions: currentProgress.repetitions,
+      nextReview: currentProgress.nextReview,
+      lastReview: currentProgress.lastReview,
+    };
+  }, [currentProgress]);
+
+  const ratingPreviews = useMemo(() => {
+    return RATING_BUTTONS.map((b) => ({
+      ...b,
+      preview: intervalLabel(currentSrsState, b.rating),
+    }));
+  }, [currentSrsState]);
 
   const stopSpeaking = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -85,6 +200,29 @@ export function ListenClient({
     if (audioRef.current) audioRef.current.playbackRate = playbackRate;
   }, [playbackRate]);
 
+  // Hydrate autoAdvance from localStorage on first render.
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(AUTO_ADVANCE_KEY) === "1") {
+        setAutoAdvance(true);
+      }
+    } catch {
+      // localStorage can throw in some sandboxed iframes; ignore.
+    }
+  }, []);
+
+  // Persist autoAdvance whenever it changes.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        AUTO_ADVANCE_KEY,
+        autoAdvance ? "1" : "0",
+      );
+    } catch {
+      // ignore
+    }
+  }, [autoAdvance]);
+
   const speak = useCallback(() => {
     if (!currentSentence) return;
     // Real publisher audio takes priority over OS TTS — voice quality + natural
@@ -93,19 +231,21 @@ export function ListenClient({
     if (currentSentence.audioUrl) {
       const el = audioRef.current;
       if (!el) {
-        toast.error("音频元素未就绪");
+        toast.error("Audio nicht bereit");
         return;
       }
       el.playbackRate = playbackRate;
       el.currentTime = 0;
       el.play().catch((err) => {
-        toast.error("播放失败", { description: (err as Error).message });
+        toast.error("Wiedergabe fehlgeschlagen", {
+          description: (err as Error).message,
+        });
         setIsPlaying(false);
       });
       return;
     }
     if (!ttsAvailable) {
-      toast.error("当前浏览器不支持 Web Speech API");
+      toast.error("Web Speech API nicht verfügbar");
       return;
     }
     window.speechSynthesis.cancel();
@@ -153,6 +293,108 @@ export function ListenClient({
       setAnalysisError((err as Error).message);
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  const handleRate = async (rating: ReviewRating) => {
+    if (!sentenceId || submittingRating) return;
+    setSubmittingRating(rating);
+    try {
+      const res = await fetch("/api/listen-progress/record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sentenceId, rating }),
+      });
+      const json = (await res.json()) as
+        | {
+            ease: number;
+            interval: number;
+            repetitions: number;
+            nextReview: number;
+            lastReview: number;
+            status: SentenceStatus;
+          }
+        | { error: string };
+      if (!res.ok || "error" in json) {
+        throw new Error(
+          "error" in json ? json.error : `HTTP ${res.status}`,
+        );
+      }
+      setProgressMap((prev) => ({
+        ...prev,
+        [sentenceId]: {
+          sentenceId,
+          ease: json.ease,
+          interval: json.interval,
+          repetitions: json.repetitions,
+          nextReview: json.nextReview,
+          lastReview: json.lastReview,
+          status: json.status,
+        },
+      }));
+      toast.success(
+        `Gespeichert · nächste Wiederholung in ${formatIntervalDays(json.interval)}`,
+        {
+          description: `${STATUS_BADGE[json.status].emoji} ${STATUS_BADGE[json.status].label}`,
+        },
+      );
+      if (autoAdvance && !isLast) {
+        // Small delay so the user sees the toast / button highlight before
+        // the card swaps. 450 ms feels snappy without being abrupt.
+        setTimeout(() => {
+          setCurrentIndex((i) => Math.min(sentences.length - 1, i + 1));
+        }, 450);
+      }
+    } catch (err) {
+      toast.error("Bewertung fehlgeschlagen", {
+        description: err instanceof Error ? err.message : "Unbekannter Fehler",
+      });
+    } finally {
+      setSubmittingRating(null);
+    }
+  };
+
+  const isSkipped = currentProgress?.status === "skipped";
+
+  const handleToggleSkip = async () => {
+    if (!sentenceId || submittingSkip) return;
+    setSubmittingSkip(true);
+    const action = isSkipped ? "unskip" : "skip";
+    try {
+      const res = await fetch("/api/listen-progress/skip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sentenceId, action }),
+      });
+      const json = (await res.json()) as
+        | (SentenceProgress & { ok?: undefined })
+        | { ok: true }
+        | { error: string };
+      if (!res.ok || "error" in json) {
+        throw new Error(
+          "error" in json ? json.error : `HTTP ${res.status}`,
+        );
+      }
+      setProgressMap((prev) => {
+        const next = { ...prev };
+        if (action === "skip") {
+          // API returned a full SentenceProgress row.
+          next[sentenceId] = json as SentenceProgress;
+        } else {
+          // Row was deleted server-side → reset to "never rated".
+          delete next[sentenceId];
+        }
+        return next;
+      });
+      toast.success(
+        action === "skip" ? "Aus SRS entfernt" : "Wieder in SRS aufgenommen",
+      );
+    } catch (err) {
+      toast.error("Aktion fehlgeschlagen", {
+        description: err instanceof Error ? err.message : "Unbekannter Fehler",
+      });
+    } finally {
+      setSubmittingSkip(false);
     }
   };
 
@@ -234,7 +476,7 @@ export function ListenClient({
             {title}
           </h1>
           <p className="text-sm text-muted-foreground mt-1 truncate">
-            {source ?? "—"} · 精听跟读
+            {source ?? "—"} · Hörverstehen
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -243,7 +485,7 @@ export function ListenClient({
             href="/listen"
             className="text-xs text-muted-foreground hover:text-foreground"
           >
-            ← 返回列表
+            ← Zurück
           </Link>
         </div>
       </header>
@@ -252,7 +494,7 @@ export function ListenClient({
       <div className="space-y-1">
         <div className="flex justify-between text-xs text-muted-foreground font-mono">
           <span>
-            第 {currentIndex + 1} / {sentences.length} 句
+            Satz {currentIndex + 1} / {sentences.length}
           </span>
           <span>{progressPct}%</span>
         </div>
@@ -263,11 +505,6 @@ export function ListenClient({
           />
         </div>
       </div>
-
-      <p className="text-xs text-muted-foreground border-l-2 border-border pl-3 italic">
-        提示：先点 ▶ 播放德语 → 自己复述一遍 → 点 「显示原文」核对 → 不懂的词双击查词
-        → 单击「解析」让 DeepSeek 拆句。键盘：Space 播放 / ← → 切句。
-      </p>
 
       {/* Main sentence card */}
       <Card>
@@ -302,7 +539,7 @@ export function ListenClient({
                     {currentSentence.grammarTag && (
                       <span>
                         <Badge variant="outline" className="mr-1">
-                          语法
+                          Grammatik
                         </Badge>
                         {currentSentence.grammarTag}
                       </span>
@@ -310,7 +547,7 @@ export function ListenClient({
                     {currentSentence.translationHint && (
                       <span>
                         <Badge variant="outline" className="mr-1">
-                          翻译
+                          Übersetzung
                         </Badge>
                         {currentSentence.translationHint}
                       </span>
@@ -323,10 +560,6 @@ export function ListenClient({
                 <div className="text-2xl text-muted-foreground/30 select-none tracking-widest font-mono">
                   ▒▒▒▒▒▒▒▒▒▒▒▒▒
                 </div>
-                <p className="text-sm text-muted-foreground italic">
-                  仔细听，然后试着复述一遍。准备好就点
-                  <span className="font-medium"> 显示原文 </span>核对。
-                </p>
               </div>
             )}
           </div>
@@ -343,7 +576,7 @@ export function ListenClient({
               onEnded={() => setIsPlaying(false)}
               onError={() => {
                 setIsPlaying(false);
-                toast.error("音频加载失败", {
+                toast.error("Audio konnte nicht geladen werden", {
                   description: currentSentence.audioUrl,
                 });
               }}
@@ -357,10 +590,10 @@ export function ListenClient({
               variant={isPlaying ? "default" : "outline"}
               onClick={togglePlay}
               disabled={!hasRealAudio && !ttsAvailable}
-              title="播放 / 暂停 (Space)"
+              title="Abspielen / Pause (Space)"
               className="max-[480px]:w-full"
             >
-              {isPlaying ? "⏸ 暂停" : "▶ 播放"}
+              {isPlaying ? "⏸ Pause" : "▶ Abspielen"}
             </Button>
             <Button
               size="sm"
@@ -368,7 +601,7 @@ export function ListenClient({
               onClick={() => setShowText((v) => !v)}
               className="max-[480px]:w-full"
             >
-              {showText ? "🙈 隐藏原文" : "👁 显示原文"}
+              {showText ? "🙈 Text verbergen" : "👁 Text zeigen"}
             </Button>
             <Button
               size="sm"
@@ -378,10 +611,10 @@ export function ListenClient({
               className="max-[480px]:w-full"
             >
               {isAnalyzing
-                ? "🔍 解析中…"
+                ? "🔍 Analysiere…"
                 : analysis
-                  ? "🔍 已解析"
-                  : "🔍 DeepSeek 解析"}
+                  ? "🔍 Analysiert"
+                  : "🔍 Analyse"}
             </Button>
             <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground max-[480px]:ml-0 max-[480px]:justify-between max-[480px]:pt-1">
               <span className="font-mono">{playbackRate.toFixed(2)}x</span>
@@ -393,11 +626,11 @@ export function ListenClient({
                 value={playbackRate}
                 onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
                 className="w-24 accent-foreground"
-                title="播放速度"
+                title="Wiedergabegeschwindigkeit"
               />
               {hasRealAudio ? (
                 <Badge variant="secondary" className="text-[10px]">
-                  真音
+                  Original
                 </Badge>
               ) : (
                 <Badge variant="outline" className="text-[10px]">
@@ -412,10 +645,10 @@ export function ListenClient({
             <div className="rounded-md border bg-muted/40 p-3 text-sm">
               {analysisError ? (
                 <div className="text-destructive text-xs">
-                  解析失败：{analysisError}
+                  Analyse fehlgeschlagen: {analysisError}
                   <div className="mt-1 text-muted-foreground not-italic">
-                    检查 <code>.env.local</code> 是否配置了
-                    <code> DEEPSEEK_API_KEY</code>。
+                    Bitte <code>DEEPSEEK_API_KEY</code> in
+                    <code> .env.local</code> prüfen.
                   </div>
                 </div>
               ) : (
@@ -425,6 +658,91 @@ export function ListenClient({
               )}
             </div>
           )}
+
+          {/* SRS rating row — always visible so a single click is enough
+              when the sentence was easy. Status reflects current progress;
+              "Text zeigen" stays a separate action for self-check. */}
+          <div className="space-y-2 pt-3 border-t border-border/40">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <span>Status</span>
+                <Badge variant="outline" className="font-normal">
+                  {currentProgress
+                    ? `${STATUS_BADGE[currentProgress.status].emoji} ${STATUS_BADGE[currentProgress.status].label}`
+                    : `${STATUS_BADGE.new.emoji} ${STATUS_BADGE.new.label}`}
+                </Badge>
+                {!isSkipped &&
+                  currentProgress?.interval !== undefined &&
+                  currentProgress.interval > 0 && (
+                    <span className="font-mono">
+                      · Intervall {formatIntervalDays(currentProgress.interval)}
+                    </span>
+                  )}
+              </div>
+              <div className="flex items-center gap-3">
+                {ratingsEnabled && (
+                  <button
+                    type="button"
+                    onClick={handleToggleSkip}
+                    disabled={submittingSkip}
+                    className="text-muted-foreground hover:text-foreground transition-colors underline-offset-2 hover:underline disabled:opacity-50"
+                    title={
+                      isSkipped
+                        ? "Diesen Satz wieder in die Wiederholung aufnehmen"
+                        : "Diesen Satz nicht wiederholen"
+                    }
+                  >
+                    {isSkipped ? "↩ Wieder aufnehmen" : "🚫 Aus SRS"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setAutoAdvance((v) => !v)}
+                  className="text-muted-foreground hover:text-foreground transition-colors underline-offset-2 hover:underline"
+                  title="Nach Bewertung automatisch zum nächsten Satz"
+                >
+                  {autoAdvance ? "⏭ Auto-Weiter" : "✋ Manuell"}
+                </button>
+              </div>
+            </div>
+            {!ratingsEnabled ? (
+              <p className="text-xs text-muted-foreground italic">
+                Demo-Artikel unterstützt keine Bewertung. Importiere einen
+                echten Artikel, um SRS-Bewertungen zu nutzen.
+              </p>
+            ) : isSkipped ? (
+              <p className="text-xs text-muted-foreground italic">
+                Dieser Satz wird nicht mehr zur Wiederholung vorgeschlagen.
+                Klick auf{" "}
+                <span className="font-medium">↩ Wieder aufnehmen</span>, um ihn
+                zurückzuholen.
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {ratingPreviews.map((b) => {
+                  const isSubmitting = submittingRating === b.rating;
+                  return (
+                    <Button
+                      key={b.rating}
+                      size="sm"
+                      variant="outline"
+                      disabled={!!submittingRating}
+                      onClick={() => handleRate(b.rating)}
+                      title={b.hint}
+                      className={`flex flex-col h-auto py-2 gap-0.5 ${b.className}`}
+                    >
+                      <span className="text-sm font-medium">
+                        {isSubmitting ? "…" : b.label}
+                      </span>
+                      <span className="text-[10px] font-mono opacity-70">
+                        {b.preview}
+                      </span>
+                    </Button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -435,24 +753,24 @@ export function ListenClient({
           onClick={goPrev}
           disabled={isFirst}
           className="max-[480px]:flex-1"
-          title="上一句 (←)"
+          title="Vorheriger Satz (←)"
         >
-          ← 上一句
+          ← Zurück
         </Button>
         <Button
           onClick={goNext}
           disabled={isLast}
           className="max-[480px]:flex-1"
-          title="下一句 (→)"
+          title="Nächster Satz (→)"
         >
-          下一句 →
+          Weiter →
         </Button>
       </div>
 
       {isLast && (
         <Card className="border-dashed">
           <CardContent className="text-sm text-muted-foreground text-center">
-            🎉 听完了！可以
+            🎉 Geschafft! Du kannst
             <Link
               href={`/listen?id=${docId}`}
               className="mx-1 underline hover:text-foreground"
@@ -461,16 +779,16 @@ export function ListenClient({
                 setCurrentIndex(0);
               }}
             >
-              从头再来一遍
+              von vorn beginnen
             </Link>
-            ，或者去
+            oder zu
             <Link
               href="/review"
               className="mx-1 underline hover:text-foreground"
             >
               /review
             </Link>
-            把刚才加入队列的词过一遍。
+            gehen, um die gespeicherten Wörter zu wiederholen.
           </CardContent>
         </Card>
       )}
@@ -480,7 +798,7 @@ export function ListenClient({
           popover={popover}
           lookup={lookup}
           alreadyAdded={addedWords.has(popover.word.toLowerCase())}
-          sourceRef={`听力：${title}`}
+          sourceRef={`Hörverstehen: ${title}`}
           onAdded={(word) =>
             setAddedWords((prev) => new Set(prev).add(word.toLowerCase()))
           }
