@@ -7,24 +7,11 @@
  *   2. A clean alignment.json
  *   3. A `documents` + `sentences` rows in Supabase, with audio_url per sentence
  *
- * Inputs (you provide these by hand):
- *   public/audio/<slug>.mp3                — the full audio file
- *   scripts/transcripts/<slug>.txt          — the PDF transcript
- *   scripts/transcripts/<slug>.meta.json    — optional { title, level, source }
- *
  * Run:
  *   npm run dw:import -- <slug>
+ *   SKIP_DB=1 npm run dw:import -- <slug>
  *
- * Outputs (gitignored):
- *   scripts/transcriptions/<slug>.input.wav      — 16 kHz mono wav for whisper
- *   scripts/transcriptions/<slug>-full.json      — whisper segments cache
- *   scripts/alignments/<slug>.json               — final alignment record
- *   public/audio/<slug>/NNN.mp3                  — per-segment cut mp3s
- *
- * Why split into a new script:
- *   The older transcribe-chunks / align-from-whisper / import-aligned pair
- *   assumes you pre-cut WAVs in Audacity. This script is what you reach for
- *   when you have one big MP3 and want zero manual chopping.
+ * Also exported as `importOne()` for batch drivers (see dw-batch-import.ts).
  */
 
 import { config } from "dotenv";
@@ -40,75 +27,42 @@ process.env.WHISPER_NODE_LOG_LEVEL =
   process.env.WHISPER_NODE_LOG_LEVEL ?? "ERROR";
 
 // ------------------------------------------------------------------
-// CLI args
+// Public types
 // ------------------------------------------------------------------
-const slug = process.argv[2];
-if (!slug) {
-  console.error("Usage: npm run dw:import -- <slug>");
-  console.error("Example: npm run dw:import -- du-hs-b1-48");
-  process.exit(1);
-}
-// npm strips --foo flags from `npm run`. Use SKIP_DB=1 npm run dw:import -- <slug>
-// to avoid writing to Supabase (useful for testing alignment before commit).
-const skipDb =
-  process.env.SKIP_DB === "1" || process.argv.includes("--skip-db");
-
-// ------------------------------------------------------------------
-// Paths
-// ------------------------------------------------------------------
-const baseDir = process.cwd();
-const mp3In = path.join(baseDir, "public", "audio", `${slug}.mp3`);
-const txtIn = path.join(baseDir, "scripts", "transcripts", `${slug}.txt`);
-const metaIn = path.join(baseDir, "scripts", "transcripts", `${slug}.meta.json`);
-const wavCache = path.join(
-  baseDir,
-  "scripts",
-  "transcriptions",
-  `${slug}.input.wav`,
-);
-const segCache = path.join(
-  baseDir,
-  "scripts",
-  "transcriptions",
-  `${slug}-full.json`,
-);
-const alignOut = path.join(
-  baseDir,
-  "scripts",
-  "alignments",
-  `${slug}.json`,
-);
-const audioOutDir = path.join(baseDir, "public", "audio", slug);
-
-// ------------------------------------------------------------------
-// Meta sidecar (optional)
-// ------------------------------------------------------------------
-interface DwMeta {
+export interface DwMeta {
   title?: string;
   level?: string;
   source?: string;
 }
-const meta: DwMeta = fs.existsSync(metaIn)
-  ? (JSON.parse(
-      fs.readFileSync(metaIn, "utf-8").replace(/^\uFEFF/, ""),
-    ) as DwMeta)
-  : {};
-const title = meta.title ?? slug;
-const level = meta.level ?? "B1";
-const source = meta.source ?? null;
+
+export interface ImportOneOptions {
+  slug: string;
+  mp3Path?: string;
+  text?: string;
+  textPath?: string;
+  meta?: DwMeta;
+  skipDb?: boolean;
+  baseDir?: string;
+}
+
+export interface ImportOneResult {
+  slug: string;
+  title: string;
+  sentenceCount: number;
+  officialMatchCount: number;
+  alignmentPath: string;
+}
 
 // ------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------
 function ensureFile(p: string, label: string) {
   if (!fs.existsSync(p)) {
-    console.error(`❌ Missing ${label}: ${p}`);
-    process.exit(1);
+    throw new Error(`Missing ${label}: ${p}`);
   }
 }
 
 function parseTime(s: string): number {
-  // whisper-node emits "HH:MM:SS.mmm" (and sometimes with ',' as decimal).
   const [hh, mm, rest] = s.split(":");
   const [ss, ms] = rest.replace(",", ".").split(".");
   return (
@@ -189,8 +143,6 @@ function bestOfficialSpan(
       if (end > official.length) break;
       const candidate = official.slice(start, end).map((t) => t.norm);
       const score = lcsScore(speechTokens, candidate);
-      // Prefer spans closer to the cursor so repeated words ("Loreley") don't
-      // make the alignment jump forward.
       const distancePenalty = Math.min(Math.abs(start - cursor) * 0.003, 0.08);
       const adjusted = score - distancePenalty;
       if (adjusted > best.score) {
@@ -220,9 +172,142 @@ function runFfmpeg(args: string[], opts: { quiet?: boolean } = {}) {
   });
 }
 
-// ------------------------------------------------------------------
-// Pipeline
-// ------------------------------------------------------------------
+interface SilenceRegion {
+  start: number;
+  end: number;
+  mid: number;
+}
+
+/**
+ * Use ffmpeg's silencedetect filter to find every quiet stretch in the input
+ * MP3. Returns regions in seconds, sorted by start. Whisper-node's segment
+ * timestamps are unreliable (off by 1-5 seconds for tight dialog), so we use
+ * real silence boundaries to snap our sentence cuts.
+ */
+function detectSilences(
+  mp3In: string,
+  opts: { noiseDb?: number; minDurationSec?: number } = {},
+): SilenceRegion[] {
+  if (!ffmpegPath) throw new Error("ffmpeg-static did not resolve to a path");
+  const noiseDb = opts.noiseDb ?? -32;
+  const minDur = opts.minDurationSec ?? 0.15;
+  const child = require("node:child_process").spawnSync(ffmpegPath, [
+    "-i",
+    mp3In,
+    "-af",
+    `silencedetect=noise=${noiseDb}dB:duration=${minDur}`,
+    "-f",
+    "null",
+    "-",
+  ]);
+  const stderr = (child.stderr ?? Buffer.from("")).toString("utf-8");
+  const regions: SilenceRegion[] = [];
+  let pendingStart: number | null = null;
+  for (const line of stderr.split(/\r?\n/)) {
+    const startMatch = line.match(/silence_start:\s*(-?[\d.]+)/);
+    if (startMatch) {
+      pendingStart = Math.max(0, Number(startMatch[1]));
+      continue;
+    }
+    const endMatch = line.match(
+      /silence_end:\s*(-?[\d.]+).*silence_duration:\s*(-?[\d.]+)/,
+    );
+    if (endMatch && pendingStart !== null) {
+      const end = Number(endMatch[1]);
+      const start = pendingStart;
+      regions.push({
+        start,
+        end,
+        mid: +((start + end) / 2).toFixed(3),
+      });
+      pendingStart = null;
+    }
+  }
+  return regions;
+}
+
+/**
+ * Rewrite each sentence boundary so it falls on a real silence midpoint.
+ * For boundary B between sentence i and i+1:
+ *   - search silences in [B - window, B + window]
+ *   - prefer the silence with the largest duration within that window
+ *   - if found, set sentences[i].endSec = sentences[i+1].startSec = silence.mid
+ *   - if no silence in window, leave both boundaries unchanged (Whisper's
+ *     timestamps will have to do)
+ *
+ * The first sentence's startSec and the last sentence's endSec are also
+ * snapped to the nearest silence (or kept at 0 / file end).
+ */
+function snapBoundariesToSilences(
+  sentences: AlignedSentence[],
+  silences: SilenceRegion[],
+  totalDurationSec: number,
+  window = 2.5,
+): AlignedSentence[] {
+  if (sentences.length === 0 || silences.length === 0) return sentences;
+
+  function bestSilenceNear(t: number): SilenceRegion | null {
+    let best: SilenceRegion | null = null;
+    let bestScore = -Infinity;
+    for (const r of silences) {
+      if (r.mid < t - window || r.mid > t + window) continue;
+      const distance = Math.abs(r.mid - t);
+      const dur = r.end - r.start;
+      // Score = duration - 0.5 * distance. Long silences dominate; ties go
+      // to whichever is closer to Whisper's estimate.
+      const score = dur - 0.5 * distance;
+      if (score > bestScore) {
+        best = r;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  // Internal boundaries.
+  for (let i = 0; i < sentences.length - 1; i++) {
+    const boundary = sentences[i].endSec;
+    const snap = bestSilenceNear(boundary);
+    if (!snap) continue;
+    const newBoundary = snap.mid;
+    // Never let an internal boundary invert either side. This can happen at
+    // the very end of some tracks when Whisper's final segment end is earlier
+    // than the closest silence midpoint chosen for the previous boundary.
+    if (
+      newBoundary <= sentences[i].startSec ||
+      newBoundary >= sentences[i + 1].endSec
+    ) {
+      continue;
+    }
+    sentences[i].endSec = +newBoundary.toFixed(3);
+    sentences[i + 1].startSec = +newBoundary.toFixed(3);
+    sentences[i].duration = +(
+      sentences[i].endSec - sentences[i].startSec
+    ).toFixed(2);
+  }
+  // Leading edge: snap startSec[0] backwards toward the first silence
+  // immediately before it (so we don't cut off the opening syllable).
+  const firstSnap = silences.find(
+    (r) =>
+      r.end <= sentences[0].startSec &&
+      sentences[0].startSec - r.end < window,
+  );
+  if (firstSnap) {
+    sentences[0].startSec = +firstSnap.mid.toFixed(3);
+    sentences[0].duration = +(
+      sentences[0].endSec - sentences[0].startSec
+    ).toFixed(2);
+  }
+  // Trailing edge.
+  const last = sentences[sentences.length - 1];
+  const trailingSnap = bestSilenceNear(last.endSec);
+  if (trailingSnap && trailingSnap.mid > last.startSec) {
+    last.endSec = +Math.min(totalDurationSec, trailingSnap.mid).toFixed(3);
+    last.duration = +(last.endSec - last.startSec).toFixed(2);
+  }
+  return sentences;
+}
+
 interface RawSegment {
   start: number;
   end: number;
@@ -239,9 +324,12 @@ interface AlignedSentence {
   match: { kind: "official" | "whisper-only"; score: number };
 }
 
-async function transcribeFull(): Promise<RawSegment[]> {
+async function transcribeFull(
+  wavCache: string,
+  segCache: string,
+): Promise<RawSegment[]> {
   if (fs.existsSync(segCache)) {
-    console.log(`🧠 Whisper cache hit → ${path.relative(baseDir, segCache)}`);
+    console.log(`🧠 Whisper cache hit → ${path.relative(process.cwd(), segCache)}`);
     return JSON.parse(fs.readFileSync(segCache, "utf-8")) as RawSegment[];
   }
   console.log(`🧠 Whisper transcribing (base model, de)...`);
@@ -270,6 +358,57 @@ async function transcribeFull(): Promise<RawSegment[]> {
   return segs;
 }
 
+/**
+ * Whisper splits on every pause. That's great for natural rhythm but bad
+ * for sentence boundaries — a single grammatical sentence with a comma-pause
+ * gets cut into two display "sentences", the second one orphaned without a
+ * subject (e.g. ", und fragst mich dann..."). Merge such fragments back into
+ * the previous segment, using the OFFICIAL text's terminal punctuation as
+ * the canonical sentence boundary.
+ */
+function mergeBrokenSentences(
+  aligned: AlignedSentence[],
+): AlignedSentence[] {
+  const merged: AlignedSentence[] = [];
+  for (const cur of aligned) {
+    const prev = merged[merged.length - 1];
+    if (!prev) {
+      merged.push({ ...cur });
+      continue;
+    }
+    // Look at the LAST non-quote character of the previous fragment's text.
+    // If it's a terminator (.!?…) we have a complete sentence; otherwise the
+    // segment continues into `cur`.
+    const tail = prev.text.replace(/[\s„“”"»«)\]]+$/, "").slice(-1);
+    const prevComplete = /[.!?…]/.test(tail);
+    if (prevComplete) {
+      merged.push({ ...cur });
+      continue;
+    }
+    // Merge `cur` into `prev`.
+    prev.endSec = cur.endSec;
+    prev.duration = +(cur.endSec - prev.startSec).toFixed(2);
+    prev.text = `${prev.text} ${cur.text}`.replace(/\s+/g, " ").trim();
+    prev.whisper = `${prev.whisper} ${cur.whisper}`.replace(/\s+/g, " ").trim();
+    // Demote the merged kind: any whisper-only fragment turns the whole
+    // sentence into a partial match. Take the weaker score.
+    prev.match = {
+      kind:
+        prev.match.kind === "whisper-only" || cur.match.kind === "whisper-only"
+          ? prev.match.kind === "official" && cur.match.kind === "whisper-only"
+            ? "official" // keep "official" if only the trailing tail is whisper-only
+            : "whisper-only"
+          : "official",
+      score: +Math.min(prev.match.score, cur.match.score).toFixed(3),
+    };
+  }
+  // Renumber audio files so they're 001..NNN with no gaps.
+  return merged.map((s, i) => ({
+    ...s,
+    audioFile: `${String(i + 1).padStart(3, "0")}.mp3`,
+  }));
+}
+
 function alignSegments(
   segments: RawSegment[],
   officialTokens: OfficialToken[],
@@ -278,9 +417,6 @@ function alignSegments(
   return segments.map((seg, i) => {
     const speechTokens = tokenizeSpeech(seg.speech);
     const span = bestOfficialSpan(speechTokens, officialTokens, cursor);
-    // 0.48 was the working threshold for Loreley intro vs body. Same here:
-    // below 0.48 we treat the chunk as something that isn't in the PDF
-    // (intro, instructions, page header read aloud, etc.) and keep Whisper.
     const isOfficial = span.score >= 0.48 && span.end > span.start;
     const text = isOfficial
       ? officialText(officialTokens, span.start, span.end)
@@ -302,19 +438,29 @@ function alignSegments(
   });
 }
 
-function cutAudio(sentences: AlignedSentence[]) {
+function cutAudio(
+  sentences: AlignedSentence[],
+  mp3In: string,
+  audioOutDir: string,
+) {
   fs.mkdirSync(audioOutDir, { recursive: true });
-  // Wipe stale chunks so a rerun doesn't leave orphans.
   for (const f of fs.readdirSync(audioOutDir)) {
     if (f.toLowerCase().endsWith(".mp3")) {
       fs.unlinkSync(path.join(audioOutDir, f));
     }
   }
-  const padding = 0.12; // 120 ms padding to avoid clipping the first syllable.
+  // Boundaries have been snapped to real silence centres by
+  // snapBoundariesToSilences(), so each startSec / endSec sits in the
+  // middle of an actual quiet stretch. Cutting on those points gives every
+  // clip ~75-150 ms of pre-roll silence and ~75-150 ms of tail silence —
+  // exactly the "shadow before / shadow after, full sentence in the middle"
+  // shape we want. No extra padding required; any added padding would just
+  // re-introduce the next sentence's onset.
   for (let i = 0; i < sentences.length; i++) {
     const s = sentences[i];
-    const start = Math.max(0, s.startSec - padding);
-    const duration = s.endSec + padding - start;
+    const start = Math.max(0, s.startSec);
+    const end = s.endSec;
+    const duration = end - start;
     const outPath = path.join(audioOutDir, s.audioFile);
     runFfmpeg(
       [
@@ -344,7 +490,10 @@ function cutAudio(sentences: AlignedSentence[]) {
   }
 }
 
-async function importToSupabase(sentences: AlignedSentence[]) {
+async function importToSupabase(
+  sentences: AlignedSentence[],
+  ctx: { title: string; level: string; source: string | null; slug: string },
+) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !serviceKey) {
@@ -357,11 +506,11 @@ async function importToSupabase(sentences: AlignedSentence[]) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  console.log(`🧹 Removing any prior "${title}" rows…`);
+  console.log(`🧹 Removing any prior "${ctx.title}" rows…`);
   const { data: existing } = await sb
     .from("documents")
     .select("id")
-    .eq("title", title);
+    .eq("title", ctx.title);
   if (existing && existing.length > 0) {
     for (const row of existing) {
       await sb.from("sentences").delete().eq("document_id", row.id);
@@ -376,9 +525,9 @@ async function importToSupabase(sentences: AlignedSentence[]) {
   const { data: docRow, error: docErr } = await sb
     .from("documents")
     .insert({
-      title,
-      source,
-      level,
+      title: ctx.title,
+      source: ctx.source,
+      level: ctx.level,
       total_sentences: sentences.length,
       progress: 0,
     })
@@ -395,23 +544,79 @@ async function importToSupabase(sentences: AlignedSentence[]) {
     original: s.text,
     translation: null,
     grammar: null,
-    audio_url: `/audio/${slug}/${s.audioFile}`,
+    audio_url: `/audio/${ctx.slug}/${s.audioFile}`,
     mastery: 0,
   }));
   const { error: sErr } = await sb.from("sentences").insert(rows);
   if (sErr) throw sErr;
 }
 
-async function main() {
+// ------------------------------------------------------------------
+// Main export
+// ------------------------------------------------------------------
+export async function importOne(
+  opts: ImportOneOptions,
+): Promise<ImportOneResult> {
+  const baseDir = opts.baseDir ?? process.cwd();
+  const slug = opts.slug;
+  const mp3In =
+    opts.mp3Path ?? path.join(baseDir, "public", "audio", `${slug}.mp3`);
+  const txtIn =
+    opts.textPath ??
+    path.join(baseDir, "scripts", "transcripts", `${slug}.txt`);
+  const metaIn = path.join(
+    baseDir,
+    "scripts",
+    "transcripts",
+    `${slug}.meta.json`,
+  );
+  const wavCache = path.join(
+    baseDir,
+    "scripts",
+    "transcriptions",
+    `${slug}.input.wav`,
+  );
+  const segCache = path.join(
+    baseDir,
+    "scripts",
+    "transcriptions",
+    `${slug}-full.json`,
+  );
+  const alignOut = path.join(
+    baseDir,
+    "scripts",
+    "alignments",
+    `${slug}.json`,
+  );
+  const audioOutDir = path.join(baseDir, "public", "audio", slug);
+  const skipDb = opts.skipDb ?? false;
+
+  const meta: DwMeta =
+    opts.meta ??
+    (fs.existsSync(metaIn)
+      ? (JSON.parse(
+          fs.readFileSync(metaIn, "utf-8").replace(/^\uFEFF/, ""),
+        ) as DwMeta)
+      : {});
+  const title = meta.title ?? slug;
+  const level = meta.level ?? "B1";
+  const source = meta.source ?? null;
+
+  console.log(`\n${"=".repeat(60)}`);
   console.log(`📂 Slug:   ${slug}`);
   console.log(`📘 Title:  ${title}`);
   console.log(`📊 Level:  ${level}`);
   console.log(`📚 Source: ${source ?? "—"}`);
 
   ensureFile(mp3In, "MP3");
-  ensureFile(txtIn, "transcript");
+  const transcript =
+    opts.text ??
+    (fs.existsSync(txtIn)
+      ? fs.readFileSync(txtIn, "utf-8")
+      : (() => {
+          throw new Error(`Missing transcript: ${txtIn}`);
+        })());
 
-  // 1) MP3 → 16 kHz mono wav for whisper.cpp.
   if (!fs.existsSync(wavCache)) {
     console.log(`\n🎵 Converting MP3 → 16 kHz mono wav…`);
     fs.mkdirSync(path.dirname(wavCache), { recursive: true });
@@ -434,72 +639,99 @@ async function main() {
     console.log(`\n🎵 Wav cache hit → ${path.relative(baseDir, wavCache)}`);
   }
 
-  // 2) Whisper transcription (cached).
-  const segments = await transcribeFull();
+  const segments = await transcribeFull(wavCache, segCache);
   if (segments.length === 0) {
-    console.error("❌ Whisper returned 0 segments. Aborting.");
-    process.exit(1);
+    throw new Error("Whisper returned 0 segments");
   }
   const totalAudio = segments[segments.length - 1].end;
   console.log(
     `   ${segments.length} segments, last ends at ${totalAudio.toFixed(1)}s`,
   );
 
-  // 3) Fuzzy-align each Whisper segment to the official transcript.
   console.log(`\n🔗 Aligning to transcript…`);
-  const officialTokens = tokenizeOfficial(fs.readFileSync(txtIn, "utf-8"));
-  const aligned = alignSegments(segments, officialTokens);
-  const officialCount = aligned.filter(
+  const officialTokens = tokenizeOfficial(transcript);
+  const rawAligned = alignSegments(segments, officialTokens);
+  const merged = mergeBrokenSentences(rawAligned);
+  const officialCount = merged.filter(
     (s) => s.match.kind === "official",
   ).length;
   console.log(
-    `   ${officialCount}/${aligned.length} matched official text` +
-      ` (rest kept Whisper, e.g. intro/instructions)`,
+    `   ${rawAligned.length} pause-segments → ${merged.length} sentences` +
+      ` (merged ${rawAligned.length - merged.length} comma-pauses).` +
+      ` ${officialCount}/${merged.length} match official text.`,
   );
 
-  // 4) Cut audio.
-  console.log(`\n✂️  Cutting MP3 into ${aligned.length} chunks…`);
-  cutAudio(aligned);
+  // Whisper's timestamps drift by 1-5 s for tight dialog. Use ffmpeg to find
+  // the real silences in the source MP3 and snap every sentence boundary to
+  // the centre of the nearest matching silence. This is what guarantees each
+  // clip contains its FULL sentence and nothing of the next.
+  console.log(`\n🔇 Detecting silences for boundary correction…`);
+  const silences = detectSilences(mp3In);
+  console.log(`   found ${silences.length} silence regions`);
+  const aligned = snapBoundariesToSilences(merged, silences, totalAudio);
 
-  // 5) Write alignment.json.
+  console.log(`\n✂️  Cutting MP3 into ${aligned.length} chunks…`);
+  cutAudio(aligned, mp3In, audioOutDir);
+
   fs.mkdirSync(path.dirname(alignOut), { recursive: true });
-  const alignmentFile = {
-    slug,
-    title,
-    level,
-    source,
-    audioPathPrefix: `/audio/${slug}/`,
-    totalDuration: +totalAudio.toFixed(2),
-    sentences: aligned,
-  };
   fs.writeFileSync(
     alignOut,
-    JSON.stringify(alignmentFile, null, 2),
+    JSON.stringify(
+      {
+        slug,
+        title,
+        level,
+        source,
+        audioPathPrefix: `/audio/${slug}/`,
+        totalDuration: +totalAudio.toFixed(2),
+        sentences: aligned,
+      },
+      null,
+      2,
+    ),
     "utf-8",
   );
   console.log(`📝 Alignment → ${path.relative(baseDir, alignOut)}`);
 
-  // 6) Supabase import.
   if (skipDb) {
     console.log(`\n⏭️  SKIP_DB set, skipping Supabase import.`);
   } else {
     console.log(`\n📥 Importing to Supabase…`);
-    await importToSupabase(aligned);
+    await importToSupabase(aligned, { title, level, source, slug });
   }
 
-  console.log(`\n✅ Done.`);
-  console.log(`   /listen → "${title}" → ▶ plays real audio.`);
-  console.log(`\nFirst 5 aligned sentences:`);
-  aligned.slice(0, 5).forEach((s, i) => {
-    console.log(
-      `${String(i + 1).padStart(2)} [${s.match.kind} ${s.match.score}] ${s.audioFile} (${s.duration}s)`,
-    );
-    console.log(`   W: ${s.whisper}`);
-    console.log(`   T: ${s.text}`);
-  });
+  console.log(`\n✅ Done: "${title}" (${aligned.length} sentences).`);
+  return {
+    slug,
+    title,
+    sentenceCount: aligned.length,
+    officialMatchCount: officialCount,
+    alignmentPath: alignOut,
+  };
 }
 
-main().catch((err) => {
-  console.error("\n❌ dw-import failed:", err);
-  process.exit(1);
-});
+// ------------------------------------------------------------------
+// CLI entry
+// ------------------------------------------------------------------
+async function main() {
+  const slug = process.argv[2];
+  if (!slug) {
+    console.error("Usage: npm run dw:import -- <slug>");
+    console.error("Example: npm run dw:import -- du-b1-05-a2a");
+    process.exit(1);
+  }
+  const skipDb =
+    process.env.SKIP_DB === "1" || process.argv.includes("--skip-db");
+  await importOne({ slug, skipDb });
+}
+
+const isDirectRun =
+  process.argv[1]?.includes("dw-import") &&
+  !process.argv[1]?.includes("dw-batch-import");
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error("\n❌ dw-import failed:", err);
+    process.exit(1);
+  });
+}

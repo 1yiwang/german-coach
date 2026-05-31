@@ -61,3 +61,7 @@ public/audio/
 scripts/transcripts/
 scripts/transcriptions/
 scripts/alignments/
+scripts/*.pdf
+
+# Tesseract trained data (binary blob, redownload via tesseract.js)
+deu.traineddata

@@ -11,7 +11,11 @@
     "audio:transcribe": "tsx scripts/transcribe-chunks.ts",
     "audio:align": "tsx scripts/align-from-whisper.ts",
     "audio:import": "tsx scripts/import-aligned.ts",
-    "dw:import": "tsx scripts/dw-import.ts"
+    "dw:import": "tsx scripts/dw-import.ts",
+    "dw:pdf-extract": "tsx scripts/dw-pdf-extract.ts",
+    "dw:parse": "tsx scripts/dw-parse-pdf-text.ts",
+    "dw:parse:ocr": "tsx scripts/dw-parse-ocr.ts",
+    "dw:batch-import": "tsx scripts/dw-batch-import.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
@@ -38,7 +42,9 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "ffmpeg-static": "^5.3.0",
+    "pdf-parse": "^2.4.5",
     "tailwindcss": "^4",
+    "tesseract.js": "^7.0.0",
     "tsx": "^4.22.3",
     "typescript": "^5"
   }
