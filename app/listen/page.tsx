@@ -6,7 +6,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { sampleArticle, type SampleSentence } from "@/lib/sample-article";
 import {
@@ -14,10 +13,13 @@ import {
   getDocumentWithSentences,
 } from "@/lib/db/documents";
 import {
+  listLibraryStats,
   listProgressForDocument,
+  type LibraryDocStat,
   type SentenceProgress,
 } from "@/lib/db/listen-progress";
 import { ListenClient } from "./listen-client";
+import { LibraryGrid, type LibraryDoc } from "./library-grid";
 
 // Server Component talks to Supabase per request; never prerender.
 export const dynamic = "force-dynamic";
@@ -122,22 +124,29 @@ async function ListenIndex() {
     loadError = err instanceof Error ? err.message : String(err);
   }
 
-  return (
-    <div className="flex flex-col gap-6">
-      <header className="space-y-2">
-        <h1 className="font-heading text-2xl font-semibold tracking-tight">
-          精听跟读
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          逐句精听：先听德语 → 隐藏原文 → 复述 → 显示原文 → DeepSeek 解析
-          → 不懂的词加入 SRS 复习。
-        </p>
-      </header>
+  // Library-wide SRS aggregates feed the grid (HP bars, due badges,
+  // status emoji). Failing here shouldn't 500 the page — degrade to
+  // empty stats so unexplored cards still render and the demo entry
+  // still works.
+  let stats: LibraryDocStat[] = [];
+  if (!loadError && docs.length > 0) {
+    try {
+      stats = await listLibraryStats(
+        docs.map((d) => ({ id: d.id, totalSentences: d.totalSentences })),
+      );
+    } catch (err) {
+      console.warn("listLibraryStats failed:", err);
+    }
+  }
 
-      {loadError ? (
+  if (loadError) {
+    return (
+      <div className="flex flex-col gap-6">
         <Card>
           <CardHeader>
-            <CardTitle className="text-destructive">读取文章列表失败</CardTitle>
+            <CardTitle className="text-destructive">
+              Bibliothek konnte nicht geladen werden
+            </CardTitle>
             <CardDescription>{loadError}</CardDescription>
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground">
@@ -145,12 +154,19 @@ async function ListenIndex() {
             <code>SUPABASE_SERVICE_ROLE_KEY</code> 是否填了。
           </CardContent>
         </Card>
-      ) : docs.length === 0 ? (
+      </div>
+    );
+  }
+
+  if (docs.length === 0) {
+    return (
+      <div className="flex flex-col gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>还没有文章</CardTitle>
+            <CardTitle>Noch keine Lektionen</CardTitle>
             <CardDescription>
-              Supabase 的 documents 表是空的。可以先用 Demo 体验逐句精听。
+              Die <code>documents</code>-Tabelle ist leer. Probier zuerst die
+              Demo aus.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -158,65 +174,32 @@ async function ListenIndex() {
               href="/listen?id=demo"
               className={buttonVariants({ size: "sm" })}
             >
-              试试 Demo（{sampleArticle.sentences.length} 句）
+              Demo starten ({sampleArticle.sentences.length} Sätze)
             </Link>
           </CardContent>
         </Card>
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2">
-          <DemoCard />
-          {docs.map((doc) => (
-            <Link
-              key={doc.id}
-              href={`/listen?id=${doc.id}`}
-              className="block group"
-            >
-              <Card className="h-full transition-colors group-hover:border-foreground/40">
-                <CardHeader>
-                  <CardTitle className="text-base leading-snug">
-                    {doc.title}
-                  </CardTitle>
-                  <CardDescription className="line-clamp-1">
-                    {doc.source ?? "—"}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="flex items-center gap-2 text-xs">
-                  {doc.level && (
-                    <Badge variant="secondary">{doc.level}</Badge>
-                  )}
-                  <span className="text-muted-foreground">
-                    {doc.totalSentences} 句
-                  </span>
-                </CardContent>
-              </Card>
-            </Link>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+      </div>
+    );
+  }
 
-function DemoCard() {
+  const libraryDocs: LibraryDoc[] = docs.map((d) => ({
+    id: d.id,
+    title: d.title,
+    source: d.source,
+    level: d.level,
+    totalSentences: d.totalSentences,
+    createdAt: d.createdAt,
+  }));
+
   return (
-    <Link href="/listen?id=demo" className="block group">
-      <Card className="h-full border-dashed transition-colors group-hover:border-foreground/40">
-        <CardHeader>
-          <CardTitle className="text-base leading-snug">
-            {sampleArticle.title}
-          </CardTitle>
-          <CardDescription className="line-clamp-1">
-            Demo · 不需要 Supabase
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex items-center gap-2 text-xs">
-          <Badge variant="outline">{sampleArticle.level}</Badge>
-          <span className="text-muted-foreground">
-            {sampleArticle.sentences.length} 句
-          </span>
-        </CardContent>
-      </Card>
-    </Link>
+    <LibraryGrid
+      docs={libraryDocs}
+      stats={stats}
+      showDemo
+      demoTitle={sampleArticle.title}
+      demoLevel={sampleArticle.level}
+      demoSentenceCount={sampleArticle.sentences.length}
+    />
   );
 }
 

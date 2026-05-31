@@ -90,6 +90,100 @@ export async function getSentenceProgress(
   return data ? fromDbRow(data as DbRow) : null;
 }
 
+/**
+ * Per-document aggregate for the /listen library grid (S2 · 🏰 BOSS
+ * map). One Supabase round-trip via a nested SELECT that inner-joins
+ * sentence_progress → sentences so each progress row carries its
+ * document_id; we then fold the rows into per-doc counts in JS.
+ *
+ * `total` is taken from `documents.total_sentences` (set at import
+ * time, never mutated) rather than re-counting sentences, so callers
+ * must hand in the doc list they want stats for. Documents with no
+ * graded sentences yet still get a stats row (all zeros) so the grid
+ * can render them as 🏚️ unexplored.
+ */
+export interface LibraryDocStat {
+  documentId: string;
+  total: number;
+  newCount: number;
+  learningCount: number;
+  masteredCount: number;
+  skippedCount: number;
+  dueCount: number;
+  lastReviewedAt?: number;
+}
+
+export async function listLibraryStats(
+  docs: { id: string; totalSentences: number }[],
+): Promise<LibraryDocStat[]> {
+  const sb = supabaseAdmin();
+  const { data, error } = await sb
+    .from("sentence_progress")
+    .select("status, next_review, last_review, sentences!inner(document_id)");
+  if (error) throw error;
+
+  const now = Date.now();
+  const byDoc = new Map<string, LibraryDocStat>();
+  for (const doc of docs) {
+    byDoc.set(doc.id, {
+      documentId: doc.id,
+      total: doc.totalSentences,
+      newCount: doc.totalSentences,
+      learningCount: 0,
+      masteredCount: 0,
+      skippedCount: 0,
+      dueCount: 0,
+    });
+  }
+
+  type Row = {
+    status: SentenceStatus;
+    next_review: string;
+    last_review: string | null;
+    sentences:
+      | { document_id: string }
+      | { document_id: string }[]
+      | null;
+  };
+
+  for (const row of (data ?? []) as Row[]) {
+    // Supabase nested selects can come back as either a single object
+    // or an array depending on FK cardinality; sentence_progress.sentence_id
+    // is 1:1 with sentences, but we still defensively unwrap both shapes.
+    const link = Array.isArray(row.sentences) ? row.sentences[0] : row.sentences;
+    if (!link) continue;
+    const docId = link.document_id;
+    const stat = byDoc.get(docId);
+    if (!stat) continue;
+
+    if (row.status === "learning") stat.learningCount++;
+    else if (row.status === "mastered") stat.masteredCount++;
+    else if (row.status === "skipped") stat.skippedCount++;
+
+    if (row.status !== "skipped") {
+      const nextMs = toMillis(row.next_review);
+      if (nextMs !== undefined && nextMs <= now) stat.dueCount++;
+    }
+
+    const lastMs = toMillis(row.last_review);
+    if (lastMs !== undefined) {
+      stat.lastReviewedAt = Math.max(stat.lastReviewedAt ?? 0, lastMs);
+    }
+  }
+
+  for (const stat of byDoc.values()) {
+    stat.newCount = Math.max(
+      0,
+      stat.total -
+        stat.learningCount -
+        stat.masteredCount -
+        stat.skippedCount,
+    );
+  }
+
+  return Array.from(byDoc.values());
+}
+
 export async function listProgressForDocument(
   documentId: string,
 ): Promise<SentenceProgress[]> {

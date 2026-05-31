@@ -544,7 +544,9 @@ ALTER TABLE words
 
 ---
 
-## 执行顺序总表
+## 执行顺序总表（v1 · 已被下方 v2 取代）
+
+> ⚠️ **已被 [v2 总表](#-执行顺序总表v22026-05-31-夜整合游戏化) 取代。** 历史记录保留以便回溯。
 
 | 顺序 | Step | 预估 | Cursor Session |
 |------|------|------|----------------|
@@ -847,6 +849,41 @@ CREATE TABLE user_badges (
 ```
 
 **唯一新增的表：** `study_log`（热力图 + 连击）+ `user_badges`（徽章）
+
+---
+
+## 🗺️ 执行顺序总表（v2 · 2026-05-31 夜 · 整合游戏化）
+
+**已完成（不再做）：**
+
+- ✅ **S1 · 句子评级 + SM-2 连通**（`sentence_progress` 表 + 4 级评分 + Aus-SRS 跳过 + 自动前进 + 德语化 UI）
+- ✅ **S6 · Telegram 推送 MVP**（`@My_German_Coach_bot` + `tg_subscribers` + `notifications_log` + 4 个时间窗调度 + `/start` + `/due`）
+
+**接下来按这个顺序做，不要跳序：**
+
+| # | Step | 目标 | 关键改动 | 预估 | 何时 commit |
+|---|------|------|---------|------|------------|
+| **S2** | 🏰 **文库 BOSS 地图**（合并旧 Step 2 + 游戏化「文库 = 世界地图」+ 游戏化「文库 BOSS 皮肤」） | `/listen` 列表页改造为 27 篇文章的关卡卡片网格：HP 进度条（已掌握句数 / 总句数）、状态（🎉 已征服 / ⚔️ 战斗中 / 🏚️ 未探索）、待复习角标、快速进入 due 句子 | `app/listen/page.tsx` 重写 + `app/listen/library-grid.tsx` 新建 + `lib/db/listen-progress.ts` 加 `listProgressForAllDocuments()` 聚合查询 | 1.5–2h | 做完后立刻 commit + push |
+| **S3** | ⚔️ **精听 BOSS 战 UI 轻量版**（游戏化「精听 = BOSS 战」纯视觉部分） | 在现有 `/listen?id=` 顶部加 HP 条 + 已击败句数 + 当前 session 重听次数（前端 state） + 困难句进入时红边高亮提示「⚡ BOSS 大招」 | `app/listen/listen-client.tsx` 加 header 区 + 困难句 detect（用 `progressMap[id].status === 'learning'` 判定） | 1h | 做完后 commit + push |
+| **S4** | 📊 **`study_log` + 首页热力图**（游戏化「首页 Dashboard」） | 新增 `study_log` 表（每天一行，effort_score / sentences_studied / sentences_mastered）+ `lib/db/study-log.ts` + `app/api/listen-progress/record` 评级时附带写 study_log + 首页或 `/dashboard` 显示近 90 天 GitHub 样式热力图 + 连击天数 | `supabase/migrations/0005_study_log.sql` + `lib/db/study-log.ts` + `components/heatmap.tsx` + 修 `app/api/listen-progress/record/route.ts` | 2–2.5h | 做完后 commit + push |
+| **S5** | 🎉 **文章完成结算页**（游戏化「文章完成结算」） | 文章最后一句评完触发结算 modal：总句数、耗时（基于 `first_learned_at` ~ `last_learned_at`）、最难句 Top 3（按 `repetitions` 排）、对比第一轮重听次数 | `app/listen/listen-client.tsx` 末句逻辑 + `components/article-summary.tsx` | 1.5h | 做完后 commit + push |
+| **S7** | 📖 **Shadow 模式 + 键盘快捷键**（旧 Step 3） | 原文默认隐藏 → 播放 → 自动停顿 N 秒 → 显示原文 + `R/J/K/S/1-4` 快捷键 | `app/listen/listen-client.tsx` | 1h | commit |
+| **S8** | 📚 **Goethe Wortliste 解析**（P0-b 旧 Step 4） | 解析 B1 + B2 PDF 输出 `_wortliste-b1.json` / `_wortliste-b2.json` | `scripts/wl-parse-goethe.ts` | 2–3h | commit |
+| **S9** | 🔊 **Edge TTS + Wortliste 入库**（P0-b 旧 Step 5） | 批量 MP3 + `words` 表加 audio 字段 + `/review` 卡片流改造 | `scripts/wl-tts-edge.ts` + `scripts/seed-wortliste.ts` + `0006_words_audio_pos.sql` | 1–1.5h | commit |
+| **S10** | 🏅 **徽章 / 独立统计页**（游戏化 P2，可选） | `user_badges` 表 + `/stats` 路由（徽章墙 + 文库总览 + 本周折线） | `supabase/migrations/0007_user_badges.sql` + `app/stats/page.tsx` | 2h | commit |
+
+### 整合后的核心原则
+
+- **游戏化 = 皮肤**：不改 `lib/srs.ts`，不改 `/api/listen-progress/record` 的核心评分逻辑，只在外面加一层数据展示和写一张 `study_log` 表。
+- **不新增 SRS 概念**：BOSS / HP / 连击都是对现有 `sentence_progress` + `study_log` 的可视化别名，不引入"经验值 / 等级 / 天赋树"。
+- **断了不惩罚**：连击中断只显示灰色，不扣分，避免愧疚驱动。
+- **每个 Step 做完先 commit + push 再开下一个**，保持 main 一直是绿的。
+- **数据流统一通过 `lib/db/*`**：S2 / S3 / S4 都不要在 client 里直接 `createClient()`。
+
+### 关于文档里的两处技术修正（已在评估时发现）
+
+1. `sentence_progress` 目前没有 `play_count` 字段。S3 的"重听次数"先用前端 session state；如果以后真要持久化，再加字段。
+2. 游戏化文档说"不新增 API"——S4 的 `study_log` 需要在评级时写入，最干净的做法是 `app/api/listen-progress/record` 里同时更新 `study_log`（不增加新路由，但要扩展现有 route）。
 
 ---
 
